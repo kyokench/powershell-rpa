@@ -8,6 +8,7 @@ Add-Type -AssemblyName System.Security
 . (Join-Path $PSScriptRoot 'ExcelAutomation.ps1')
 . (Join-Path $PSScriptRoot 'DateAutomation.ps1')
 . (Join-Path $PSScriptRoot 'WindowAutomation.ps1')
+. (Join-Path $PSScriptRoot 'ImageAutomation.ps1')
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -84,7 +85,7 @@ $positionTimer.Add_Tick({
 })
 $positionTimer.Start()
 $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelブック保存','Excelブックを閉じる')
-$actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了') + $excelActions
+$actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
@@ -109,6 +110,14 @@ $repeatColumn.Name='Repeat';$repeatColumn.HeaderText='キー回数';$repeatColum
 $repeatColumn.DefaultCellStyle.NullValue='1'
 [void]$grid.Columns.Add($repeatColumn)
 $repeatColumn.DisplayIndex=2
+$grid.Add_CellFormatting({param($sender,$e)
+ if($e.RowIndex -ge 0 -and $grid.Columns[$e.ColumnIndex].Name -eq 'Target' -and $grid.Rows[$e.RowIndex].Cells['Action'].Value -in @('画像クリック','画像ダブルクリック','画像待機')){
+  try{
+   $target=[string]$e.Value|ConvertFrom-Json -ErrorAction Stop
+   if($target.Kind -eq 'Image'){$e.Value="画像 $($target.Width)×$($target.Height)px / 横 $([int]$target.OffsetX) / 縦 $([int]$target.OffsetY)";$e.FormattingApplied=$true}
+  }catch{}
+ }
+})
 $grid.Add_CellBeginEdit({ param($sender,$e)
  if ($grid.Columns[$e.ColumnIndex].Name -eq 'Value' -and $grid.Rows[$e.RowIndex].Cells['Action'].Value -in @('ID入力','パスワード入力')) {
   $e.Cancel=$true
@@ -211,6 +220,10 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
  if ($steps.Count -eq 0) { throw '操作を追加してください。' }
  foreach ($s in $steps) {
   if ($s.Action -notin $actions) { throw "未対応の操作: $($s.Action)" }
+  if($s.Action -in @('画像クリック','画像ダブルクリック','画像待機')){
+   $imageTarget=Read-ImageTarget $s.Target
+   $imageTarget.Bitmap.Dispose()
+  }
   if($s.Action -eq 'キー送信'){$null=Get-KeyRepeatCount $s}
   if($s.Action -eq 'ウィンドウをアクティブ化'){
    if([string]::IsNullOrWhiteSpace($s.Value)){throw '「ウィンドウ指定」で対象を選ぶか、値にウィンドウ名を入力してください。'}
@@ -313,7 +326,7 @@ function Export-ScenarioFile($destination, $steps) {
   $source=[IO.File]::ReadAllText($script:RuntimeSourcePath)
  }else{
   $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'RpaStudio.ps1'))
-  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1')){
+  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1','ImageAutomation.ps1')){
    $module=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $moduleName))
    $source=$source.Replace((". (Join-Path `$PSScriptRoot '"+$moduleName+"')"),$module)
   }
@@ -440,6 +453,57 @@ $windowSetup=New-Button 'ウィンドウ指定' {
    Write-Log "行 $($row.Index+1): 対象ウィンドウを指定しました。"
   }
  }finally{$dialog.Dispose()}
+}
+$imagePick=New-Button '画像取得' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log '画像を登録する行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $previousState=$form.WindowState
+ try{
+  $toolbar.Enabled=$false;$form.WindowState='Minimized'
+  $script:cancel=$false;Wait-Rpa 500
+  $target=Capture-ImageTarget
+  if($target){
+   $row.Cells['Target'].Value=$target|ConvertTo-Json -Compress
+   if($row.Cells['Action'].Value -notin @('画像クリック','画像ダブルクリック','画像待機')){$row.Cells['Action'].Value='画像クリック';$row.Cells['Value'].Value=''}
+   Write-Log "見本画像を保存しました（$($target.Width)×$($target.Height)px）。実行時は画像の中心をクリックします。"
+  }
+ }catch{Write-Log "画像取得停止: $($_.Exception.Message)"}
+ finally{$toolbar.Enabled=$true;$form.WindowState=$previousState}
+}
+$imageSetup=New-Button '画像設定' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log '見本画像を登録した行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $decoded=$null;$dialog=$null;$preview=$null
+ try{
+  if($row.Cells['Action'].Value -notin @('画像クリック','画像ダブルクリック','画像待機')){throw '画像操作の行を選択してください。'}
+  $json=[string]$row.Cells['Target'].Value
+  $decoded=Read-ImageTarget $json;$target=$json|ConvertFrom-Json
+  $dialog=New-Object Windows.Forms.Form
+  $dialog.Text='画像設定';$dialog.ClientSize=New-Object Drawing.Size(560,385)
+  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
+  $preview=New-Object Windows.Forms.PictureBox;$preview.SetBounds(12,12,536,160);$preview.SizeMode='Zoom'
+  $preview.Image=$decoded.Bitmap;$dialog.Controls.Add($preview)
+  $hintLabel=New-Object Windows.Forms.Label
+  $hintLabel.Text='基準は見本画像の中心です。右・下が＋、左・上が－です。'
+  $hintLabel.SetBounds(12,180,536,25);$dialog.Controls.Add($hintLabel)
+  $numbers=@{}
+  foreach($item in @(@('OffsetX','横のずらし量（px）',210,-30000,30000,$decoded.OffsetX),@('OffsetY','縦のずらし量（px）',250,-30000,30000,$decoded.OffsetY),@('Tolerance','色の許容差（0～100）',290,0,100,$decoded.Tolerance))){
+   $label=New-Object Windows.Forms.Label;$label.Text=$item[1];$label.SetBounds(12,$item[2],300,27);$dialog.Controls.Add($label)
+   $number=New-Object Windows.Forms.NumericUpDown;$number.Name=$item[0];$number.Minimum=$item[3];$number.Maximum=$item[4];$number.Value=$item[5]
+   $number.SetBounds(330,$item[2],218,27);$dialog.Controls.Add($number);$numbers[$item[0]]=$number
+  }
+  $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.DialogResult='OK';$ok.SetBounds(365,340,85,30)
+  $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(460,340,88,30)
+  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
+  if($dialog.ShowDialog($form) -eq 'OK'){
+   foreach($name in @('OffsetX','OffsetY','Tolerance')){$target|Add-Member -NotePropertyName $name -NotePropertyValue ([int]$numbers[$name].Value) -Force}
+   $row.Cells['Target'].Value=$target|ConvertTo-Json -Depth 8 -Compress
+   Write-Log "画像設定: 中心から横 $($target.OffsetX)px / 縦 $($target.OffsetY)px"
+  }
+ }catch{[void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'画像設定エラー')}
+ finally{
+  if($preview){$preview.Image=$null};if($dialog){$dialog.Dispose()};if($decoded){$decoded.Bitmap.Dispose()}
+ }
 }
 $dateSetup = New-Button '日付入力設定' {
  if($grid.SelectedRows.Count -ne 1){Write-Log '日付入力を設定する行を1行選択してください。';return}
@@ -710,6 +774,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
    $executionLabel.Text="実行中: 行 $($s.RowNumber) / $($s.Action)（$index / $($steps.Count)）"
    Write-Log "行 $($s.RowNumber) ($index / $($steps.Count)) : $($s.Action)"
    switch ($s.Action) {
+    { $_ -in @('画像クリック','画像ダブルクリック','画像待機') } {Invoke-ImageStep $s}
     'ウィンドウをアクティブ化' {Invoke-WindowActivation $s}
     'RPA終了' { }
     '日付入力' { Invoke-DateInput $s }
