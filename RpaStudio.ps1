@@ -1,4 +1,5 @@
 ﻿#requires -Version 5.1
+$script:RuntimeSourcePath=$PSCommandPath
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Security
@@ -6,6 +7,7 @@ Add-Type -AssemblyName System.Security
 . (Join-Path $PSScriptRoot 'WebAutomation.ps1')
 . (Join-Path $PSScriptRoot 'ExcelAutomation.ps1')
 . (Join-Path $PSScriptRoot 'DateAutomation.ps1')
+. (Join-Path $PSScriptRoot 'WindowAutomation.ps1')
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -82,7 +84,7 @@ $positionTimer.Add_Tick({
 })
 $positionTimer.Start()
 $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelブック保存','Excelブックを閉じる')
-$actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力') + $excelActions
+$actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
@@ -102,6 +104,11 @@ $secretColumn.Name='ProtectedValue'; $secretColumn.Visible=$false
 $dateColumn=New-Object Windows.Forms.DataGridViewTextBoxColumn
 $dateColumn.Name='DateOptions';$dateColumn.Visible=$false
 [void]$grid.Columns.Add($dateColumn)
+$repeatColumn=New-Object Windows.Forms.DataGridViewTextBoxColumn
+$repeatColumn.Name='Repeat';$repeatColumn.HeaderText='キー回数';$repeatColumn.FillWeight=22
+$repeatColumn.DefaultCellStyle.NullValue='1'
+[void]$grid.Columns.Add($repeatColumn)
+$repeatColumn.DisplayIndex=2
 $grid.Add_CellBeginEdit({ param($sender,$e)
  if ($grid.Columns[$e.ColumnIndex].Name -eq 'Value' -and $grid.Rows[$e.RowIndex].Cells['Action'].Value -in @('ID入力','パスワード入力')) {
   $e.Cancel=$true
@@ -136,6 +143,7 @@ function Add-StoredStep($step) {
  $index=$grid.Rows.Add($step.Action,$step.Value,$step.X,$step.Y,$step.Delay,$step.Target)
  $grid.Rows[$index].Cells['ProtectedValue'].Value=[string]$step.ProtectedValue
  $grid.Rows[$index].Cells['DateOptions'].Value=[string]$step.DateOptions
+ $grid.Rows[$index].Cells['Repeat'].Value=if([string]::IsNullOrWhiteSpace([string]$step.Repeat)){'1'}else{[string]$step.Repeat}
  if($step.Action -in @('ID入力','パスワード入力')) { $grid.Rows[$index].Cells['Value'].Value='[暗号化済み]' }
 }
 function Invoke-ProtectedInput($step) {
@@ -195,13 +203,19 @@ function Get-Steps([switch]$SelectedOnly) {
  foreach ($r in $grid.Rows) {
   if ($SelectedOnly -and -not $r.Selected) { continue }
   $value=if($r.Cells['Action'].Value -in @('ID入力','パスワード入力')){'[暗号化済み]'}else{[string]$r.Cells['Value'].Value}
-  [pscustomobject]@{ RowNumber=$r.Index+1; Action=[string]$r.Cells['Action'].Value; Value=$value; X=[string]$r.Cells['X'].Value; Y=[string]$r.Cells['Y'].Value; Delay=[string]$r.Cells['Delay'].Value; Target=[string]$r.Cells['Target'].Value; ProtectedValue=[string]$r.Cells['ProtectedValue'].Value; DateOptions=[string]$r.Cells['DateOptions'].Value }
+  $repeat=if([string]::IsNullOrWhiteSpace([string]$r.Cells['Repeat'].Value)){'1'}else{[string]$r.Cells['Repeat'].Value}
+  [pscustomobject]@{ RowNumber=$r.Index+1; Action=[string]$r.Cells['Action'].Value; Value=$value; X=[string]$r.Cells['X'].Value; Y=[string]$r.Cells['Y'].Value; Delay=[string]$r.Cells['Delay'].Value; Target=[string]$r.Cells['Target'].Value; ProtectedValue=[string]$r.Cells['ProtectedValue'].Value; DateOptions=[string]$r.Cells['DateOptions'].Value; Repeat=$repeat }
  }
 }
 function Check-Steps($steps, [switch]$DecryptSecrets) {
  if ($steps.Count -eq 0) { throw '操作を追加してください。' }
  foreach ($s in $steps) {
   if ($s.Action -notin $actions) { throw "未対応の操作: $($s.Action)" }
+  if($s.Action -eq 'キー送信'){$null=Get-KeyRepeatCount $s}
+  if($s.Action -eq 'ウィンドウをアクティブ化'){
+   if([string]::IsNullOrWhiteSpace($s.Value)){throw '「ウィンドウ指定」で対象を選ぶか、値にウィンドウ名を入力してください。'}
+   if($s.Target -and ($s.Target|ConvertFrom-Json -ErrorAction Stop).Kind -ne 'Window'){throw '「ウィンドウ指定」で対象を指定し直してください。'}
+  }
   $dateTarget=$null;$excelTarget=$null
   if($s.Action -eq '日付入力'){
    $null=Get-DateInputText $s
@@ -258,21 +272,55 @@ function Mouse-Click([uint32]$down,[uint32]$up) {
  [RpaNative]::mouse_event($down,0,0,0,[UIntPtr]::Zero)
  [RpaNative]::mouse_event($up,0,0,0,[UIntPtr]::Zero)
 }
+function Get-KeyRepeatCount($step) {
+ if([string]::IsNullOrWhiteSpace([string]$step.Repeat)){return 1}
+ $count=0
+ if(-not [int]::TryParse([string]$step.Repeat,[ref]$count) -or $count -lt 1 -or $count -gt 10000){throw 'キー回数は1～10000の整数で指定してください。'}
+ return $count
+}
+function Send-RpaKeys([string]$keys){[Windows.Forms.SendKeys]::SendWait([regex]::Replace($keys,'(?i)\{SPACE\}',' '))}
+function Invoke-KeyStep($step) {
+ $count=Get-KeyRepeatCount $step
+ for($iteration=0;$iteration -lt $count;$iteration++){
+  Wait-Rpa 0
+  Send-RpaKeys $step.Value
+  if($iteration -lt $count-1){Wait-Rpa 50}
+ }
+}
+function Copy-SelectedSteps {
+ if($grid.SelectedRows.Count -eq 0){Write-Log 'コピーする行を選択してください。';return}
+ $steps=@(Get-Steps -SelectedOnly)
+ $insertIndex=1+($grid.SelectedRows|Measure-Object -Property Index -Maximum).Maximum
+ for($offset=0;$offset -lt $steps.Count;$offset++){
+  $step=$steps[$offset];$index=[int]$insertIndex+$offset
+  $grid.Rows.Insert($index,[object[]]@($step.Action,$step.Value,$step.X,$step.Y,$step.Delay,$step.Target))
+  $grid.Rows[$index].Cells['ProtectedValue'].Value=$step.ProtectedValue
+  $grid.Rows[$index].Cells['DateOptions'].Value=$step.DateOptions
+  $grid.Rows[$index].Cells['Repeat'].Value=$step.Repeat
+ }
+ $grid.ClearSelection();$grid.CurrentCell=$grid.Rows[[int]$insertIndex].Cells['Action']
+ for($offset=0;$offset -lt $steps.Count;$offset++){$grid.Rows[[int]$insertIndex+$offset].Selected=$true}
+ Write-Log "$($steps.Count)行を選択範囲の下にコピーしました。"
+}
 function Export-ScenarioFile($destination, $steps) {
  Check-Steps $steps
  $encoding = [Text.UTF8Encoding]::new($true)
  $scenario = @{Version=1; Steps=@($steps)} | ConvertTo-Json -Depth 8
  $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($scenario))
- $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'RpaStudio.ps1'))
- $module = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ElementAutomation.ps1'))
- $source = $source.Replace(". (Join-Path `$PSScriptRoot 'ElementAutomation.ps1')",$module)
- $webModule = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'WebAutomation.ps1'))
- $source = $source.Replace(". (Join-Path `$PSScriptRoot 'WebAutomation.ps1')",$webModule)
- $excelModule = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ExcelAutomation.ps1'))
- $source = $source.Replace(". (Join-Path `$PSScriptRoot 'ExcelAutomation.ps1')",$excelModule)
- $dateModule = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'DateAutomation.ps1'))
- $source = $source.Replace(". (Join-Path `$PSScriptRoot 'DateAutomation.ps1')",$dateModule)
- $source = [regex]::Replace($source,'(?m)^\$script:AutoRunScenario = \$null\r?$', [System.Text.RegularExpressions.MatchEvaluator]{ param($match) '$script:AutoRunScenario = ''' + $payload + '''' })
+ if($script:AutoRunScenario){
+  # The running temporary script already contains every module. Reuse it so
+  # recipients can export again without the original installation directory.
+  $source=[IO.File]::ReadAllText($script:RuntimeSourcePath)
+ }else{
+  $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'RpaStudio.ps1'))
+  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1')){
+   $module=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $moduleName))
+   $source=$source.Replace((". (Join-Path `$PSScriptRoot '"+$moduleName+"')"),$module)
+  }
+ }
+ $declaration='(?m)^\$script:AutoRunScenario = (?:\$null|''[A-Za-z0-9+/=]*'')\r?$'
+ if([regex]::Matches($source,$declaration).Count -ne 1){throw '実行プログラムの読み込みに失敗しました。最新版のRPA Studioから実行ファイルを作成し直してください。'}
+ $source = [regex]::Replace($source,$declaration, [System.Text.RegularExpressions.MatchEvaluator]{ param($match) '$script:AutoRunScenario = ''' + $payload + '''' })
  $bytes = $encoding.GetPreamble() + $encoding.GetBytes($source)
  $encoded = [Convert]::ToBase64String($bytes)
  $lines = New-Object 'System.Collections.Generic.List[string]'
@@ -371,6 +419,27 @@ $addBelow = New-Button '操作追加（下）' {
  $grid.ClearSelection()
  $grid.CurrentCell = $grid.Rows[$insertIndex].Cells['Action']
  $grid.Rows[$insertIndex].Selected = $true
+}
+$copyRows=New-Button '行コピー' {Copy-SelectedSteps}
+$windowSetup=New-Button 'ウィンドウ指定' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log '対象を登録する行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $windows=@([RpaWindows]::List()|Where-Object{$_.ProcessId -ne $PID}|Sort-Object ProcessName,Title)
+ if($windows.Count -eq 0){Write-Log '対象ウィンドウがありません。対象アプリを開いてください。';return}
+ $dialog=New-Object Windows.Forms.Form
+ $dialog.Text='アクティブ化するウィンドウを選択';$dialog.Size=New-Object Drawing.Size(760,360);$dialog.StartPosition='CenterParent'
+ $list=New-Object Windows.Forms.ListBox;$list.Dock='Fill';$list.HorizontalScrollbar=$true
+ foreach($window in $windows){[void]$list.Items.Add(($window.ProcessName+' | '+$window.Title))};$list.SelectedIndex=0
+ $ok=New-Object Windows.Forms.Button;$ok.Text='指定';$ok.Dock='Bottom';$ok.Height=35;$ok.DialogResult='OK'
+ $dialog.Controls.Add($list);$dialog.Controls.Add($ok);$dialog.AcceptButton=$ok
+ try{
+  if($dialog.ShowDialog($form) -eq 'OK'){
+   $window=$windows[$list.SelectedIndex]
+   $row.Cells['Action'].Value='ウィンドウをアクティブ化';$row.Cells['Value'].Value=$window.Title
+   $row.Cells['Target'].Value=@{Kind='Window';Process=$window.ProcessName;Class=$window.ClassName}|ConvertTo-Json -Compress
+   Write-Log "行 $($row.Index+1): 対象ウィンドウを指定しました。"
+  }
+ }finally{$dialog.Dispose()}
 }
 $dateSetup = New-Button '日付入力設定' {
  if($grid.SelectedRows.Count -ne 1){Write-Log '日付入力を設定する行を1行選択してください。';return}
@@ -602,7 +671,6 @@ $webPick = New-Button 'ウェブ要素取得' {
  finally{
   $script:running=$false;$grid.Enabled=$true
   foreach($button in $toolbar.Controls){$button.Enabled=$true};$stop.Enabled=$false
-  if($script:AutoRunScenario){$export.Enabled=$false}
  }
 }
 $webClick = New-Button 'ウェブ要素クリック' {
@@ -625,6 +693,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
   }).Count -gt 0
  } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'入力エラー'); return }
  $script:running = $true; $script:cancel = $false
+ $exitRequested=$false
  $script:ScenarioDateBase=Get-RpaToday
  $activeStep=$null
  foreach($row in $grid.Rows) { $row.Cells['State'].Value=''; $row.DefaultCellStyle=New-Object Windows.Forms.DataGridViewCellStyle }
@@ -641,6 +710,8 @@ function Invoke-Scenario([switch]$SelectedOnly) {
    $executionLabel.Text="実行中: 行 $($s.RowNumber) / $($s.Action)（$index / $($steps.Count)）"
    Write-Log "行 $($s.RowNumber) ($index / $($steps.Count)) : $($s.Action)"
    switch ($s.Action) {
+    'ウィンドウをアクティブ化' {Invoke-WindowActivation $s}
+    'RPA終了' { }
     '日付入力' { Invoke-DateInput $s }
     { $_ -in $excelActions } { Invoke-ExcelStep $s }
     'Web用URLを開く' { Start-RpaWebBrowser $s.Value }
@@ -662,7 +733,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
       [Windows.Forms.SendKeys]::SendWait('^v')
      }
     }
-    'キー送信' { [Windows.Forms.SendKeys]::SendWait($s.Value) }
+    'キー送信' { Invoke-KeyStep $s }
     'URLを開く' {
      if($useWebBrowser){
       Write-Log 'Web操作を含むため、このURLは専用Edgeで開きます。'
@@ -674,8 +745,9 @@ function Invoke-Scenario([switch]$SelectedOnly) {
    Wait-Rpa ([int]$s.Delay)
    Set-StepState $s.RowNumber '完了'
    $activeStep=$null
+   if($s.Action -eq 'RPA終了'){$exitRequested=$true;break}
   }
-  $executionLabel.Text="完了（$($steps.Count)行）"
+  $executionLabel.Text="完了（$index 行）"
   Write-Log '実行が完了しました。'
  } catch {
   $cancelled=$script:cancel -or $_.Exception -is [OperationCanceledException]
@@ -693,8 +765,8 @@ function Invoke-Scenario([switch]$SelectedOnly) {
   $script:running=$false; $grid.Enabled=$true; $grid.ReadOnly=$false
   $script:ScenarioDateBase=$null
   foreach ($b in $toolbar.Controls) { $b.Enabled=$true }; $stop.Enabled=$false
-  if ($script:AutoRunScenario) { $export.Enabled=$false }
  }
+ if($exitRequested){$form.Close()}
 }
 $run = New-Button '全体実行' { Invoke-Scenario }
 $runSelected = New-Button '選択行を実行' { Invoke-Scenario -SelectedOnly }
@@ -711,10 +783,9 @@ $form.Add_KeyDown({
 $form.Add_FormClosing({ param($sender,$e)
  if ($script:running) { $script:cancel = $true; $e.Cancel = $true }
 })
-Write-Log 'キー例: Enter={ENTER} / Tab={TAB} / Ctrl+A=^a / Ctrl+L=^l'
+Write-Log 'キー例: Space={SPACE} / Enter={ENTER} / Tab={TAB} / Ctrl+A=^a / Ctrl+L=^l'
 Write-Log '文字入力はクリップボードを書き換えます。URLは既定のブラウザで開きます。'
 if ($script:AutoRunScenario) {
- $export.Enabled=$false; $export.Visible=$false
  $form.Text='PowerShell RPA シナリオ実行'
  $form.Add_Shown({
   try {
