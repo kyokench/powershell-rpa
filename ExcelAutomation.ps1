@@ -14,8 +14,7 @@ function Assert-ExcelBook {
 }
 function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  $dynamic=$path.Contains('{年月}')
- $month=$day.ToString("yyyy'年'M'月'",[Globalization.CultureInfo]::InvariantCulture)
- $folder=[IO.Path]::GetFullPath($path.Replace('{年月}',$month))
+ $folder=[IO.Path]::GetFullPath((Expand-RpaDateTokens $path $day))
  if(Test-Path -LiteralPath $folder -PathType Container){return $folder}
  $parent=[IO.Path]::GetDirectoryName($folder)
  if($dynamic -and $parent -and (Test-Path -LiteralPath $parent -PathType Container)){
@@ -26,6 +25,7 @@ function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
 }
 function Invoke-ExcelStep($step){
  Wait-Rpa 0
+ $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
  switch($step.Action){
   'Excelブックを開く' {
    $path=[IO.Path]::GetFullPath([string]$step.Value)
@@ -60,7 +60,7 @@ function Invoke-ExcelStep($step){
    Assert-ExcelBook
    $sheets=$null;$sheet=$null
    try{
-    $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item([string]$step.Value)
+    $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item((Expand-RpaDateTokens $step.Value $day))
     $sheet.Activate();$script:ExcelSheetName=[string]$sheet.Name
    }finally{Release-ExcelObject $sheet;Release-ExcelObject $sheets}
   }
@@ -68,7 +68,7 @@ function Invoke-ExcelStep($step){
    Assert-ExcelBook
    if($script:ExcelBook.ReadOnly){throw '読み取り専用のブックには入力できません。'}
    $target=$step.Target|ConvertFrom-Json -ErrorAction Stop
-   $sheetName=if($target.Sheet){[string]$target.Sheet}else{$script:ExcelSheetName}
+   $sheetName=if($target.Sheet){Expand-RpaDateTokens $target.Sheet $day}else{$script:ExcelSheetName}
    $sheets=$null;$sheet=$null;$range=$null
    try{
     $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
@@ -81,7 +81,7 @@ function Invoke-ExcelStep($step){
   {$_ -in @('Excelセル選択','Excelシート印刷','ExcelシートPDF保存')} {
    Assert-ExcelBook
    $target=$step.Target|ConvertFrom-Json -ErrorAction Stop
-   $sheetName=if($target.Sheet){[string]$target.Sheet}else{$script:ExcelSheetName}
+   $sheetName=if($target.Sheet){Expand-RpaDateTokens $target.Sheet $day}else{$script:ExcelSheetName}
    $sheets=$null;$sheet=$null;$range=$null
    try{
     $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
@@ -93,7 +93,6 @@ function Invoke-ExcelStep($step){
      }
      'Excelシート印刷' { $sheet.PrintOut() }
      'ExcelシートPDF保存' {
-      $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
       $folder=Resolve-ExcelPdfFolder $step.Value $day
       $destination=Join-Path $folder ($day.ToString('yyyy.MM.dd',[Globalization.CultureInfo]::InvariantCulture)+'.pdf')
       if(Test-Path -LiteralPath $destination){throw "同名のPDFが既にあります: $destination"}

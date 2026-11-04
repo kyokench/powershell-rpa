@@ -9,6 +9,7 @@ Add-Type -AssemblyName System.Security
 . (Join-Path $PSScriptRoot 'DateAutomation.ps1')
 . (Join-Path $PSScriptRoot 'WindowAutomation.ps1')
 . (Join-Path $PSScriptRoot 'ImageAutomation.ps1')
+. (Join-Path $PSScriptRoot 'MailAutomation.ps1')
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -89,6 +90,7 @@ $positionTimer.Start()
 $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
+$actions += 'メール作成'
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
 [void]$grid.Columns.Add($actionColumn)
@@ -222,6 +224,7 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
  if ($steps.Count -eq 0) { throw '操作を追加してください。' }
  foreach ($s in $steps) {
   if ($s.Action -notin $actions) { throw "未対応の操作: $($s.Action)" }
+  if($s.Action -eq 'メール作成'){$null=Read-MailTarget $s.Target}
   if($s.Action -in @('画像クリック','画像ダブルクリック','画像待機')){
    $imageTarget=Read-ImageTarget $s.Target
    $imageTarget.Bitmap.Dispose()
@@ -333,7 +336,7 @@ function Export-ScenarioFile($destination, $steps) {
   $source=[IO.File]::ReadAllText($script:RuntimeSourcePath)
  }else{
   $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'RpaStudio.ps1'))
-  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1','ImageAutomation.ps1')){
+  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1','ImageAutomation.ps1','MailAutomation.ps1')){
    $module=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $moduleName))
    $source=$source.Replace((". (Join-Path `$PSScriptRoot '"+$moduleName+"')"),$module)
   }
@@ -595,7 +598,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,270)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('操作',15),@('値（PDFの場合：保存先フォルダー／yyyy.MM.dd.pdf）',70),@('対象シート名（空欄は選択中のシート）',125),@('セル番地（例：B3）',180))){
+ foreach($item in @(@('操作',15),@('値（シート選択：{年月} 可／PDF：保存先フォルダー）',70),@('対象シート名（空欄は選択中・{年月} 可）',125),@('セル番地（例：B3）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)
@@ -658,6 +661,46 @@ $excelSetup = New-Button 'Excel操作設定' {
    Write-Log "行 $($row.Index+1): Excel操作を設定しました。"
   }
  }finally{$dialog.Dispose()}
+}
+$mailSetup=New-Button 'メール作成設定' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log 'メール作成を設定する行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $dialog=New-Object Windows.Forms.Form
+ $dialog.Text='メール作成設定（Outlook下書き）';$dialog.ClientSize=New-Object Drawing.Size(640,500)
+ $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false
+ $fields=@{}
+ foreach($spec in @(@('To','宛先（任意・複数はセミコロン区切り）',12,26),@('Subject','件名',67,26),@('Body','本文（自由入力）',122,145),@('Attachments','添付パス（1行に1ファイル、{年月}・{日付} 可）',296,86))){
+  $label=New-Object Windows.Forms.Label;$label.Text=$spec[1];$label.SetBounds(12,$spec[2],610,22);$dialog.Controls.Add($label)
+  $box=New-Object Windows.Forms.TextBox;$box.Multiline=$spec[3] -gt 26
+  if($box.Multiline){$box.ScrollBars='Vertical';$box.AcceptsReturn=$true}
+  $box.SetBounds(12,($spec[2]+23),610,$spec[3]);$dialog.Controls.Add($box);$fields[$spec[0]]=$box
+ }
+ $fields.Body.Text='{noncoverpage}'
+ if($row.Cells['Action'].Value -eq 'メール作成'){
+  $fields.Body.Text=[string]$row.Cells['Value'].Value
+  try{
+   $old=Read-MailTarget ([string]$row.Cells['Target'].Value)
+   $fields.To.Text=[string]$old.To;$fields.Subject.Text=[string]$old.Subject
+   $fields.Attachments.Lines=[string[]]@($old.Attachments)
+  }catch{}
+ }
+ $browse=New-Object Windows.Forms.Button;$browse.Text='添付を選択';$browse.SetBounds(12,425,125,30)
+ $browse.Add_Click({
+  $picker=New-Object Windows.Forms.OpenFileDialog;$picker.Multiselect=$true
+  try{if($picker.ShowDialog($dialog) -eq 'OK'){
+   $fields.Attachments.Lines=[string[]]@(@($fields.Attachments.Lines|Where-Object{$_})+@($picker.FileNames))
+  }}finally{$picker.Dispose()}
+ })
+ $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(440,458,85,30)
+ $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.SetBounds(535,458,87,30);$cancel.DialogResult='Cancel'
+ $dialog.Controls.Add($browse);$dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.CancelButton=$cancel
+ $ok.Add_Click({
+  $json=@{Kind='Mail';To=$fields.To.Text;Subject=$fields.Subject.Text;Attachments=@($fields.Attachments.Lines|ForEach-Object{$_.Trim()}|Where-Object{$_})}|ConvertTo-Json -Compress
+  try{$null=Read-MailTarget $json}catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
+  $row.Cells['Action'].Value='メール作成';$row.Cells['Value'].Value=$fields.Body.Text;$row.Cells['Target'].Value=$json
+  $dialog.DialogResult='OK'
+ })
+ try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose()}
 }
 $configureInput = New-Button '入力情報設定' {
  if($grid.SelectedRows.Count -ne 1){Write-Log 'ID入力またはパスワード入力の行を1行選択してください。'; return}
@@ -815,6 +858,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
    $executionLabel.Text="実行中: 行 $($s.RowNumber) / $($s.Action)（$index / $($steps.Count)）"
    Write-Log "行 $($s.RowNumber) ($index / $($steps.Count)) : $($s.Action)"
    switch ($s.Action) {
+    'メール作成' {Invoke-MailDraft $s}
     { $_ -in @('画像クリック','画像ダブルクリック','画像待機') } {Invoke-ImageStep $s}
     'ウィンドウをアクティブ化' {Invoke-WindowActivation $s}
     'RPA終了' { }

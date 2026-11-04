@@ -2,6 +2,10 @@
 function Get-RpaToday {
  [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([datetime]::UtcNow,'Tokyo Standard Time').Date
 }
+function Expand-RpaDateTokens([string]$text, [datetime]$day) {
+ $culture=[Globalization.CultureInfo]::InvariantCulture
+ $text.Replace('{年月}',$day.ToString("yyyy'年'M'月'",$culture)).Replace('{日付}',$day.ToString('yyyy.MM.dd',$culture))
+}
 function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday)) {
  if([string]::IsNullOrWhiteSpace($step.Value) -or $step.Value.Length -gt 100){throw '日付の書式を指定してください（100文字以内）。'}
  $options=if($step.DateOptions){$step.DateOptions|ConvertFrom-Json -ErrorAction Stop}else{[pscustomobject]@{Basis='Today';OffsetDays=0}}
