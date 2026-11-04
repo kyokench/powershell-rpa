@@ -37,6 +37,8 @@ public static class RpaNative {
 $script:running = $false
 $script:cancel = $false
 $script:path = $null
+$script:SavedScenarioSnapshot = '[]'
+$script:ScenarioRequestedClose = $false
 $script:AutoRunScenario = $null
 $form = New-Object Windows.Forms.Form
 $form.Text = 'PowerShell RPA Studio'
@@ -84,7 +86,7 @@ $positionTimer.Add_Tick({
  $positionLabel.Text = "現在のマウス位置  X: $($p.X)   Y: $($p.Y)    |    Ctrl / Shift + 行見出しクリックで複数選択"
 })
 $positionTimer.Start()
-$excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelブック保存','Excelブックを閉じる')
+$excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
@@ -238,9 +240,14 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
    if(-not [IO.Path]::IsPathRooted([string]$s.Value) -or [IO.Path]::GetExtension([string]$s.Value) -notin @('.xlsx','.xlsm','.xlsb','.xls')){throw 'ExcelブックにはExcelファイルの絶対パスを指定してください。'}
   }
   if($s.Action -eq 'Excelシート選択' -and [string]::IsNullOrWhiteSpace($s.Value)){throw 'Excelのシート名を値に入力してください。'}
-  if($s.Action -eq 'Excelセル入力' -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
+  if($s.Action -in @('Excelセル入力','Excelセル選択') -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
    $excelTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
    if($excelTarget.Kind -ne 'Excel' -or $excelTarget.Cell -notmatch '^\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}$'){throw '「Excel操作設定」で入力先セル（A1など）を設定してください。'}
+  }
+  if($s.Action -in @('Excelシート印刷','ExcelシートPDF保存')){
+   $sheetTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
+   if($sheetTarget.Kind -ne 'Excel'){throw '「Excel操作設定」で対象シートを設定してください。'}
+   if($s.Action -eq 'ExcelシートPDF保存' -and -not [IO.Path]::IsPathRooted([string]$s.Value)){throw 'PDFの保存先フォルダーを指定してください。'}
   }
   if ($s.Action -in @('ID入力','パスワード入力')) {
    if(-not $s.ProtectedValue -or -not $s.ProtectedValue.StartsWith('DPAPI:v1:')) { throw "行 $($s.RowNumber): 「入力情報設定」でID・パスワードを登録してください。" }
@@ -360,9 +367,13 @@ function Export-ScenarioFile($destination, $steps) {
  $lines.Add('If result <> 0 Then MsgBox "Scenario launch failed. Code: " & result, 16, "RPA Studio"')
  [IO.File]::WriteAllLines($destination,$lines.ToArray(),[Text.Encoding]::ASCII)
 }
+function Get-ScenarioSnapshot($steps) {
+ ConvertTo-Json -InputObject @($steps) -Depth 8 -Compress
+}
 $new = New-Button '新規' {
  if ($grid.Rows.Count -gt 0 -and [Windows.Forms.MessageBox]::Show('未保存の変更を破棄して新規作成しますか？','新規','YesNo') -ne 'Yes') { return }
  $grid.Rows.Clear(); $script:path = $null
+ $script:SavedScenarioSnapshot = '[]'
 }
 $open = New-Button '開く' {
  $d = New-Object Windows.Forms.OpenFileDialog; $d.Filter = 'RPAシナリオ (*.json)|*.json'
@@ -374,30 +385,45 @@ $open = New-Button '開く' {
    if ($grid.Rows.Count -gt 0 -and [Windows.Forms.MessageBox]::Show('現在の編集内容を置き換えますか？','開く','YesNo') -ne 'Yes') { return }
    $grid.Rows.Clear()
    foreach ($s in $steps) { Add-StoredStep $s }
+   $script:SavedScenarioSnapshot = Get-ScenarioSnapshot @(Get-Steps)
    $script:path = $d.FileName; Write-Log "読込: $script:path"
   } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'読込エラー') }
  }
  $d.Dispose()
 }
 $save = New-Button '名前を付けて保存' {
- try {
-  $steps = @(Get-Steps); Check-Steps $steps
-  $d = New-Object Windows.Forms.SaveFileDialog; $d.Filter = 'RPAシナリオ (*.json)|*.json'; $d.DefaultExt = 'json'
-  if ($script:path) { $d.FileName = $script:path }
-  if ($d.ShowDialog() -eq 'OK') {
-   @{Version=1; Steps=$steps} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $d.FileName -Encoding UTF8
-   $script:path = $d.FileName; Write-Log "保存: $script:path"
-  }
-  $d.Dispose()
- } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'保存エラー') }
+ [void](Save-CurrentScenario -SaveAs)
 }
-function Save-CurrentScenario {
- if (-not $script:path) { $save.PerformClick(); return }
+function Save-CurrentScenario([switch]$SaveAs) {
+ $d=$null
  try {
   $steps = @(Get-Steps); Check-Steps $steps
-  @{Version=1; Steps=$steps} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:path -Encoding UTF8 -ErrorAction Stop
-  Write-Log "上書き保存: $script:path"
- } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'保存エラー') }
+  $destination=$script:path
+  if ($SaveAs -or -not $destination) {
+   $d = New-Object Windows.Forms.SaveFileDialog; $d.Filter = 'RPAシナリオ (*.json)|*.json'; $d.DefaultExt = 'json'
+   if ($destination) { $d.FileName = $destination }
+   if ($d.ShowDialog($form) -ne 'OK') { return $false }
+   $destination=$d.FileName
+  }
+  @{Version=1; Steps=$steps} | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $destination -Encoding UTF8 -ErrorAction Stop
+  $script:path=$destination
+  $script:SavedScenarioSnapshot=Get-ScenarioSnapshot $steps
+  Write-Log "保存: $script:path"
+  return $true
+ } catch {
+  [void][Windows.Forms.MessageBox]::Show($form,$_.Exception.Message,'保存エラー')
+  return $false
+ } finally { if($d){$d.Dispose()} }
+}
+function Confirm-ScenarioClose {
+ if ((Get-ScenarioSnapshot @(Get-Steps)) -ceq $script:SavedScenarioSnapshot) { return $true }
+ $message=if($script:path){"未保存の変更があります。`r`n次のシナリオに上書き保存しますか？`r`n$script:path"}else{'未保存の変更があります。シナリオを名前を付けて保存しますか？'}
+ $answer=[Windows.Forms.MessageBox]::Show($form,$message,'終了前の保存確認','YesNoCancel','Question','Button3')
+ switch($answer){
+  'Yes' { return (Save-CurrentScenario) }
+  'No' { return $true }
+  default { return $false }
+ }
 }
 $export = New-Button '実行ファイル保存' {
  $d = New-Object Windows.Forms.SaveFileDialog
@@ -406,6 +432,7 @@ $export = New-Button '実行ファイル保存' {
   $steps=@(Get-Steps); Check-Steps $steps
   if ($d.ShowDialog() -eq 'OK') {
    Export-ScenarioFile $d.FileName $steps
+   $script:SavedScenarioSnapshot=Get-ScenarioSnapshot $steps
    Write-Log "実行ファイル保存: $($d.FileName)（保存時点の全行を実行）"
   }
  } catch { [void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'書き出しエラー') }
@@ -568,7 +595,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,270)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('操作',15),@('値（ファイルパス・シート名・入力文字）',70),@('シート名（セル入力用・空欄は選択中）',125),@('セル（セル入力用）',180))){
+ foreach($item in @(@('操作',15),@('値（PDFの場合：保存先フォルダー／yyyy.MM.dd.pdf）',70),@('対象シート名（空欄は選択中のシート）',125),@('セル番地（例：B3）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)
@@ -579,6 +606,12 @@ $excelSetup = New-Button 'Excel操作設定' {
  $valueBox=New-Object Windows.Forms.TextBox;$valueBox.SetBounds(12,93,450,26);$dialog.Controls.Add($valueBox)
  if($row.Cells['Action'].Value -in $excelActions -or $isDateRow){$valueBox.Text=[string]$row.Cells['Value'].Value}
  $browse=New-Object Windows.Forms.Button;$browse.Text='参照';$browse.SetBounds(470,92,87,28);$dialog.Controls.Add($browse)
+ $monthFolder=New-Object Windows.Forms.Button
+ $monthFolder.Text='年月フォルダーを追加';$monthFolder.SetBounds(12,236,210,28);$dialog.Controls.Add($monthFolder)
+ $monthFolder.Add_Click({
+  $baseFolder=$valueBox.Text.Trim()
+  if($baseFolder -and -not $baseFolder.Contains('{年月}')){$valueBox.Text=$baseFolder.TrimEnd('\','/')+'\{年月}'}
+ })
  $sheetBox=New-Object Windows.Forms.TextBox;$sheetBox.SetBounds(12,148,545,26);$dialog.Controls.Add($sheetBox)
  $cellBox=New-Object Windows.Forms.TextBox;$cellBox.Text='A1';$cellBox.SetBounds(12,203,260,26);$dialog.Controls.Add($cellBox)
  try{
@@ -586,25 +619,33 @@ $excelSetup = New-Button 'Excel操作設定' {
   if($target.Kind -eq 'Excel'){$sheetBox.Text=[string]$target.Sheet;$cellBox.Text=[string]$target.Cell}
  }catch{}
  $browse.Add_Click({
+  if($kind.SelectedItem -eq 'ExcelシートPDF保存'){
+   $folderDialog=New-Object Windows.Forms.FolderBrowserDialog
+   $folderDialog.Description='日付名のPDFを保存するフォルダーを選択'
+   try{if($folderDialog.ShowDialog($dialog) -eq 'OK'){$valueBox.Text=$folderDialog.SelectedPath}}finally{$folderDialog.Dispose()}
+   return
+  }
   $fileDialog=New-Object Windows.Forms.OpenFileDialog;$fileDialog.Filter='Excelブック|*.xlsx;*.xlsm;*.xlsb;*.xls'
   try{if($fileDialog.ShowDialog($dialog) -eq 'OK'){$valueBox.Text=$fileDialog.FileName}}finally{$fileDialog.Dispose()}
  })
- $kind.Add_SelectedIndexChanged({
-  $isCell=$kind.SelectedItem -eq 'Excelセル入力';$sheetBox.Enabled=$isCell;$cellBox.Enabled=$isCell
-  $browse.Enabled=$kind.SelectedItem -eq 'Excelブックを開く'
-  $valueBox.Enabled=$kind.SelectedItem -notin @('Excelブック保存','Excelブックを閉じる')
- })
- $sheetBox.Enabled=$kind.SelectedItem -eq 'Excelセル入力';$cellBox.Enabled=$sheetBox.Enabled
- $browse.Enabled=$kind.SelectedItem -eq 'Excelブックを開く'
- $valueBox.Enabled=$kind.SelectedItem -notin @('Excelブック保存','Excelブックを閉じる')
+ $updateExcelFields={
+  $isCell=$kind.SelectedItem -in @('Excelセル入力','Excelセル選択')
+  $sheetBox.Enabled=$isCell -or $kind.SelectedItem -in @('Excelシート印刷','ExcelシートPDF保存')
+  $cellBox.Enabled=$isCell
+  $browse.Enabled=$kind.SelectedItem -in @('Excelブックを開く','ExcelシートPDF保存')
+  $monthFolder.Visible=$kind.SelectedItem -eq 'ExcelシートPDF保存'
+  $valueBox.Enabled=$kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','Excelセル入力','ExcelシートPDF保存')
+ }
+ $kind.Add_SelectedIndexChanged($updateExcelFields)
+ & $updateExcelFields
  $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(375,236,85,28)
  $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(470,236,87,28)
  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
  $ok.Add_Click({
-  if($kind.SelectedItem -eq 'Excelセル入力' -and $cellBox.Text -notmatch '^\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}$'){
+  if($kind.SelectedItem -in @('Excelセル入力','Excelセル選択') -and $cellBox.Text -notmatch '^\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}$'){
    [void][Windows.Forms.MessageBox]::Show('セルはA1やB2の形式で指定してください。','入力エラー');return
   }
-  if($kind.SelectedItem -in @('Excelブックを開く','Excelシート選択') -and [string]::IsNullOrWhiteSpace($valueBox.Text)){
+  if($kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','ExcelシートPDF保存') -and [string]::IsNullOrWhiteSpace($valueBox.Text)){
    [void][Windows.Forms.MessageBox]::Show('値を入力してください。','入力エラー');return
   }
   $dialog.DialogResult='OK'
@@ -613,7 +654,7 @@ $excelSetup = New-Button 'Excel操作設定' {
   if($dialog.ShowDialog($form) -eq 'OK'){
    $row.Cells['Action'].Value=if($isDateRow -and $kind.SelectedItem -eq 'Excelセル入力'){'日付入力'}else{[string]$kind.SelectedItem}
    $row.Cells['Value'].Value=if($valueBox.Enabled){$valueBox.Text}else{''}
-   $row.Cells['Target'].Value=if($kind.SelectedItem -eq 'Excelセル入力'){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text}|ConvertTo-Json -Compress}else{''}
+   $row.Cells['Target'].Value=if($sheetBox.Enabled){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text}|ConvertTo-Json -Compress}else{''}
    Write-Log "行 $($row.Index+1): Excel操作を設定しました。"
   }
  }finally{$dialog.Dispose()}
@@ -831,7 +872,10 @@ function Invoke-Scenario([switch]$SelectedOnly) {
   $script:ScenarioDateBase=$null
   foreach ($b in $toolbar.Controls) { $b.Enabled=$true }; $stop.Enabled=$false
  }
- if($exitRequested){$form.Close()}
+ if($exitRequested){
+  $script:ScenarioRequestedClose=$true
+  try{$form.Close()}finally{$script:ScenarioRequestedClose=$false}
+ }
 }
 $run = New-Button '全体実行' { Invoke-Scenario }
 $runSelected = New-Button '選択行を実行' { Invoke-Scenario -SelectedOnly }
@@ -842,11 +886,12 @@ $form.Add_KeyDown({
  if ($e.Control -and -not $e.Alt -and -not $e.Shift -and $e.KeyCode -eq [Windows.Forms.Keys]::S) {
   $e.Handled = $true
   $e.SuppressKeyPress = $true
-  if ($save.Enabled -and $toolbar.Enabled -and -not $script:running) { Save-CurrentScenario }
+  if ($save.Enabled -and $toolbar.Enabled -and -not $script:running) { [void](Save-CurrentScenario) }
  }
 })
 $form.Add_FormClosing({ param($sender,$e)
- if ($script:running) { $script:cancel = $true; $e.Cancel = $true }
+ if ($script:running) { $script:cancel = $true; $e.Cancel = $true; return }
+ if (-not $script:ScenarioRequestedClose) { $e.Cancel = -not (Confirm-ScenarioClose) }
 })
 Write-Log 'キー例: Space={SPACE} / Enter={ENTER} / Tab={TAB} / Ctrl+A=^a / Ctrl+L=^l'
 Write-Log '文字入力はクリップボードを書き換えます。URLは既定のブラウザで開きます。'
@@ -857,6 +902,7 @@ if ($script:AutoRunScenario) {
    $doc=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($script:AutoRunScenario)) | ConvertFrom-Json
    $steps=@($doc.Steps); Check-Steps $steps
    foreach($s in $steps) { Add-StoredStep $s }
+   $script:SavedScenarioSnapshot=Get-ScenarioSnapshot @(Get-Steps)
    Invoke-Scenario
   } catch { Write-Log "起動失敗: $($_.Exception.Message)" }
  })

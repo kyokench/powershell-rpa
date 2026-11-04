@@ -12,6 +12,18 @@ function Assert-ExcelBook {
  if($null -eq $script:ExcelBook){throw '先に「Excelブックを開く」を実行してください。'}
  try{$null=$script:ExcelBook.Name}catch{throw 'Excelブックが閉じられています。「Excelブックを開く」から再実行してください。'}
 }
+function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
+ $dynamic=$path.Contains('{年月}')
+ $month=$day.ToString("yyyy'年'M'月'",[Globalization.CultureInfo]::InvariantCulture)
+ $folder=[IO.Path]::GetFullPath($path.Replace('{年月}',$month))
+ if(Test-Path -LiteralPath $folder -PathType Container){return $folder}
+ $parent=[IO.Path]::GetDirectoryName($folder)
+ if($dynamic -and $parent -and (Test-Path -LiteralPath $parent -PathType Container)){
+  [void][IO.Directory]::CreateDirectory($folder)
+  return $folder
+ }
+ throw "PDFの保存先フォルダーが見つかりません: $folder"
+}
 function Invoke-ExcelStep($step){
  Wait-Rpa 0
  switch($step.Action){
@@ -64,6 +76,31 @@ function Invoke-ExcelStep($step){
     if($range.CountLarge -ne 1){throw '入力先は1セルを指定してください。'}
     $range.NumberFormat='@'
     $range.Value2=[string]$step.Value
+   }finally{Release-ExcelObject $range;Release-ExcelObject $sheet;Release-ExcelObject $sheets}
+  }
+  {$_ -in @('Excelセル選択','Excelシート印刷','ExcelシートPDF保存')} {
+   Assert-ExcelBook
+   $target=$step.Target|ConvertFrom-Json -ErrorAction Stop
+   $sheetName=if($target.Sheet){[string]$target.Sheet}else{$script:ExcelSheetName}
+   $sheets=$null;$sheet=$null;$range=$null
+   try{
+    $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
+    switch($step.Action){
+     'Excelセル選択' {
+      $range=$sheet.Range([string]$target.Cell)
+      $sheet.Activate();$range.Select()
+      $script:ExcelSheetName=[string]$sheet.Name
+     }
+     'Excelシート印刷' { $sheet.PrintOut() }
+     'ExcelシートPDF保存' {
+      $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
+      $folder=Resolve-ExcelPdfFolder $step.Value $day
+      $destination=Join-Path $folder ($day.ToString('yyyy.MM.dd',[Globalization.CultureInfo]::InvariantCulture)+'.pdf')
+      if(Test-Path -LiteralPath $destination){throw "同名のPDFが既にあります: $destination"}
+      $sheet.ExportAsFixedFormat(0,$destination,0,$true,$false)
+      Write-Log "PDF保存: $destination"
+     }
+    }
    }finally{Release-ExcelObject $range;Release-ExcelObject $sheet;Release-ExcelObject $sheets}
   }
   'Excelブック保存' {
