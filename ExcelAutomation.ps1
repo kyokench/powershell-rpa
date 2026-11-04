@@ -23,6 +23,14 @@ function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  }
  throw "PDFの保存先フォルダーが見つかりません: $folder"
 }
+function Resolve-ExcelCellAddress([string]$address,[datetime]$day) {
+ if($address -notmatch '^\$?[A-Za-z]{1,3}\$?(?:[1-9][0-9]{0,6}|\{日\})$'){throw 'セル番地は A1 または A{日} のように指定してください。'}
+ $address.Replace('{日}',$day.Day.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
+function Set-ExcelCellClipboard([string]$value) {
+ if($value.Length){[Windows.Forms.Clipboard]::SetText($value)}
+ else{[Windows.Forms.Clipboard]::Clear()}
+}
 function Invoke-ExcelStep($step){
  Wait-Rpa 0
  $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
@@ -72,13 +80,13 @@ function Invoke-ExcelStep($step){
    $sheets=$null;$sheet=$null;$range=$null
    try{
     $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
-    $range=$sheet.Range([string]$target.Cell)
+    $range=$sheet.Range((Resolve-ExcelCellAddress $target.Cell $day))
     if($range.CountLarge -ne 1){throw '入力先は1セルを指定してください。'}
     $range.NumberFormat='@'
     $range.Value2=[string]$step.Value
    }finally{Release-ExcelObject $range;Release-ExcelObject $sheet;Release-ExcelObject $sheets}
   }
-  {$_ -in @('Excelセル選択','Excelシート印刷','ExcelシートPDF保存')} {
+  {$_ -in @('Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存')} {
    Assert-ExcelBook
    $target=$step.Target|ConvertFrom-Json -ErrorAction Stop
    $sheetName=if($target.Sheet){Expand-RpaDateTokens $target.Sheet $day}else{$script:ExcelSheetName}
@@ -87,9 +95,15 @@ function Invoke-ExcelStep($step){
     $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
     switch($step.Action){
      'Excelセル選択' {
-      $range=$sheet.Range([string]$target.Cell)
+      $range=$sheet.Range((Resolve-ExcelCellAddress $target.Cell $day))
       $sheet.Activate();$range.Select()
       $script:ExcelSheetName=[string]$sheet.Name
+     }
+     'Excelセルコピー' {
+      $range=$sheet.Range((Resolve-ExcelCellAddress $target.Cell $day))
+      $script:ExcelApp.Calculate()
+      Set-ExcelCellClipboard ([string]$range.Value2)
+      Write-Log "Excelセルをクリップボードにコピーしました: $sheetName!$($range.Address())"
      }
      'Excelシート印刷' { $sheet.PrintOut() }
      'ExcelシートPDF保存' {

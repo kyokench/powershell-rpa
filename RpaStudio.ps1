@@ -87,7 +87,7 @@ $positionTimer.Add_Tick({
  $positionLabel.Text = "現在のマウス位置  X: $($p.X)   Y: $($p.Y)    |    Ctrl / Shift + 行見出しクリックで複数選択"
 })
 $positionTimer.Start()
-$excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
+$excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actions += 'メール作成'
@@ -243,9 +243,10 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
    if(-not [IO.Path]::IsPathRooted([string]$s.Value) -or [IO.Path]::GetExtension([string]$s.Value) -notin @('.xlsx','.xlsm','.xlsb','.xls')){throw 'ExcelブックにはExcelファイルの絶対パスを指定してください。'}
   }
   if($s.Action -eq 'Excelシート選択' -and [string]::IsNullOrWhiteSpace($s.Value)){throw 'Excelのシート名を値に入力してください。'}
-  if($s.Action -in @('Excelセル入力','Excelセル選択') -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
+  if($s.Action -in @('Excelセル入力','Excelセル選択','Excelセルコピー') -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
    $excelTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
-   if($excelTarget.Kind -ne 'Excel' -or $excelTarget.Cell -notmatch '^\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}$'){throw '「Excel操作設定」で入力先セル（A1など）を設定してください。'}
+   if($excelTarget.Kind -ne 'Excel'){throw '「Excel操作設定」でセルを設定してください。'}
+   $null=Resolve-ExcelCellAddress $excelTarget.Cell ([datetime]::Today)
   }
   if($s.Action -in @('Excelシート印刷','ExcelシートPDF保存')){
    $sheetTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
@@ -598,7 +599,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,270)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('操作',15),@('値（シート選択：{年月} 可／PDF：保存先フォルダー）',70),@('対象シート名（空欄は選択中・{年月} 可）',125),@('セル番地（例：B3）',180))){
+ foreach($item in @(@('操作',15),@('値（シート選択：{年月} 可／PDF：保存先フォルダー）',70),@('対象シート名（空欄は選択中・{年月} 可）',125),@('セル番地（例：B3、実行日で変える場合：A{日}）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)
@@ -632,7 +633,7 @@ $excelSetup = New-Button 'Excel操作設定' {
   try{if($fileDialog.ShowDialog($dialog) -eq 'OK'){$valueBox.Text=$fileDialog.FileName}}finally{$fileDialog.Dispose()}
  })
  $updateExcelFields={
-  $isCell=$kind.SelectedItem -in @('Excelセル入力','Excelセル選択')
+  $isCell=$kind.SelectedItem -in @('Excelセル入力','Excelセル選択','Excelセルコピー')
   $sheetBox.Enabled=$isCell -or $kind.SelectedItem -in @('Excelシート印刷','ExcelシートPDF保存')
   $cellBox.Enabled=$isCell
   $browse.Enabled=$kind.SelectedItem -in @('Excelブックを開く','ExcelシートPDF保存')
@@ -645,8 +646,9 @@ $excelSetup = New-Button 'Excel操作設定' {
  $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(470,236,87,28)
  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
  $ok.Add_Click({
-  if($kind.SelectedItem -in @('Excelセル入力','Excelセル選択') -and $cellBox.Text -notmatch '^\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}$'){
-   [void][Windows.Forms.MessageBox]::Show('セルはA1やB2の形式で指定してください。','入力エラー');return
+  if($kind.SelectedItem -in @('Excelセル入力','Excelセル選択','Excelセルコピー')){
+   try{$null=Resolve-ExcelCellAddress $cellBox.Text ([datetime]::Today)}
+   catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
   }
   if($kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','ExcelシートPDF保存') -and [string]::IsNullOrWhiteSpace($valueBox.Text)){
    [void][Windows.Forms.MessageBox]::Show('値を入力してください。','入力エラー');return
