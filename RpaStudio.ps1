@@ -92,7 +92,7 @@ $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actions += @('メール作成','Outlookをアクティブ化')
-$actions += @('日付条件If','Else','EndIf')
+$actions += @('日付条件If','曜日条件If','Else','EndIf')
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
 [void]$grid.Columns.Add($actionColumn)
@@ -540,6 +540,28 @@ $imageSetup=New-Button '画像設定' {
   if($preview){$preview.Image=$null};if($dialog){$dialog.Dispose()};if($decoded){$decoded.Bitmap.Dispose()}
  }
 }
+$weekdaySetup=New-Button '曜日条件設定' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log '曜日条件を設定する行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $dialog=New-Object Windows.Forms.Form
+ $dialog.Text='曜日条件If設定';$dialog.ClientSize=New-Object Drawing.Size(430,150);$dialog.StartPosition='CenterParent'
+ $label=New-Object Windows.Forms.Label;$label.Text='実行日の曜日（日本時間）を選んでください。';$label.SetBounds(12,12,400,25);$dialog.Controls.Add($label)
+ $days=New-Object Windows.Forms.ComboBox;$days.DropDownStyle='DropDownList';$days.SetBounds(12,50,200,28)
+ $days.Items.AddRange([object[]]@('日曜日','月曜日','火曜日','水曜日','木曜日','金曜日','土曜日'));$days.SelectedIndex=1;$dialog.Controls.Add($days)
+ $operator=New-Object Windows.Forms.ComboBox;$operator.DropDownStyle='DropDownList';$operator.SetBounds(225,50,185,28)
+ $operator.Items.AddRange([object[]]@('だったら','ではなかったら'));$operator.SelectedIndex=0;$dialog.Controls.Add($operator)
+ if($row.Cells['Action'].Value -eq '曜日条件If'){
+  try{$old=Read-WeekdayCondition ([string]$row.Cells['Value'].Value);$days.SelectedIndex=$old.Value;if($old.Operator -eq '!='){$operator.SelectedIndex=1}}catch{}
+ }
+ $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(220,105,90,30);$ok.DialogResult='OK';$dialog.Controls.Add($ok)
+ $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.SetBounds(320,105,90,30);$cancel.DialogResult='Cancel';$dialog.Controls.Add($cancel);$dialog.CancelButton=$cancel;$dialog.AcceptButton=$ok
+ try{
+  if($dialog.ShowDialog($form) -eq 'OK'){
+   $op=if($operator.SelectedIndex -eq 0){'='}else{'!='}
+   $row.Cells['Action'].Value='曜日条件If';$row.Cells['Value'].Value='曜日'+$op+[string]$days.SelectedItem;$row.Cells['Target'].Value=''
+  }
+ }finally{$dialog.Dispose()}
+}
 $conditionSetup=New-Button '日付条件設定' {
  if($grid.SelectedRows.Count -ne 1){Write-Log 'Ifを設定する行を1行選択してください。';return}
  [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
@@ -887,7 +909,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
   foreach ($s in $steps) {
    Wait-Rpa 0
    $activeStep=$s; $index++
-   if($s.Action -in @('日付条件If','Else','EndIf')){
+   if($s.Action -in @('日付条件If','曜日条件If','Else','EndIf')){
     $flowActive=Invoke-DateFlow $s $flowStack $flowActive $script:ScenarioDateBase
     Set-StepState $s.RowNumber '完了';$activeStep=$null
     continue

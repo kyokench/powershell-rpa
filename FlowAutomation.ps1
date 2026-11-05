@@ -18,11 +18,24 @@ function Test-DateCondition([string]$expression,[datetime]$day) {
   '<=' {return $actual -le $condition.Value}
  }
 }
+function Read-WeekdayCondition([string]$expression) {
+ $match=[regex]::Match($expression,'^\s*(?:曜日\s*)?(=|!=)?\s*([日月火水木金土])(?:曜日)?\s*$')
+ if(-not $match.Success){throw '曜日条件は「曜日=月曜日」「曜日!=月曜日」などで指定してください。'}
+ $operator=if($match.Groups[1].Success){$match.Groups[1].Value}else{'='}
+ [pscustomobject]@{Operator=$operator;Value='日月火水木金土'.IndexOf($match.Groups[2].Value)}
+}
+function Test-WeekdayCondition([string]$expression,[datetime]$day) {
+ $condition=Read-WeekdayCondition $expression
+ $equal=[int]$day.DayOfWeek -eq $condition.Value
+ if($condition.Operator -eq '!='){return (-not $equal)}
+ return $equal
+}
 function Assert-ScenarioFlow($steps) {
  $stack=New-Object 'System.Collections.Generic.List[object]'
  foreach($step in $steps){
   switch($step.Action){
    '日付条件If' {$null=Read-DateCondition $step.Value;$stack.Add([pscustomobject]@{ElseSeen=$false})}
+   '曜日条件If' {$null=Read-WeekdayCondition $step.Value;$stack.Add([pscustomobject]@{ElseSeen=$false})}
    'Else' {
     if($stack.Count -eq 0 -or $stack[$stack.Count-1].ElseSeen){throw 'Elseの位置が正しくありません。対応するIfを含めてください。'}
     $stack[$stack.Count-1].ElseSeen=$true
@@ -37,10 +50,10 @@ function Assert-ScenarioFlow($steps) {
 }
 function Invoke-DateFlow($step,$stack,[bool]$active,[datetime]$day) {
  switch($step.Action){
-  '日付条件If' {
-   $result=Test-DateCondition $step.Value $day
+  {$_ -in @('日付条件If','曜日条件If')} {
+   $result=if($step.Action -eq '曜日条件If'){Test-WeekdayCondition $step.Value $day}else{Test-DateCondition $step.Value $day}
    $stack.Add([pscustomobject]@{ParentActive=$active;ConditionResult=$result;ElseSeen=$false})
-   Write-Log "日付条件 $($step.Value): $result"
+   Write-Log "$($step.Action) $($step.Value): $result"
    return ($active -and $result)
   }
   'Else' {
