@@ -643,7 +643,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,340)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('操作',15),@('値（シート選択：{年月}・{年月-1} 可／PDF：保存先）',70),@('対象シート名（空欄は選択中・前月は {年月-1}）',125),@('セル番地（例：A{日}、前日：A{日-1}、翌日：A{日+1}）',180))){
+ foreach($item in @(@('操作',15),@('値（シート選択：{年月}・{年月-1} 可／PDF：保存先）',70),@('対象シート名（空欄は選択中・前月は {年月-1}）',125),@('セル番地（前日：A{日-1}／行番号加算：G{日行+2}）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)

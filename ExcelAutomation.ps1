@@ -39,7 +39,14 @@ function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  throw "PDFの保存先フォルダーが見つかりません: $folder"
 }
 function Resolve-ExcelCellAddress([string]$address,[datetime]$day) {
- if($address -notmatch '^\$?[A-Za-z]{1,3}\$?(?:[1-9][0-9]{0,6}|\{日(?:[+-][0-9]{1,5})?\})$'){throw 'セル番地は A1、A{日}、A{日-1} のように指定してください。'}
+ $rowExpression=[regex]::Match($address,'^(\$?[A-Za-z]{1,3}\$?)\{日行([+-][0-9]{1,5})?\}$')
+ if($rowExpression.Success){
+  $offset=if($rowExpression.Groups[2].Success){[int]$rowExpression.Groups[2].Value}else{0}
+  $row=$day.Day+$offset
+  if($row -lt 1 -or $row -gt 1048576){throw '日行の計算結果がExcelの行番号の範囲外です。'}
+  return $rowExpression.Groups[1].Value+$row.ToString([Globalization.CultureInfo]::InvariantCulture)
+ }
+ if($address -notmatch '^\$?[A-Za-z]{1,3}\$?(?:[1-9][0-9]{0,6}|\{日(?:[+-][0-9]{1,5})?\})$'){throw 'セル番地は A1、A{日-1}、G{日行+2} のように指定してください。'}
  Expand-RpaDateTokens $address $day
 }
 function Set-ExcelCellClipboard([string]$value) {
@@ -99,6 +106,7 @@ function Invoke-ExcelStep($step){
     if($range.CountLarge -ne 1){throw '入力先は1セルを指定してください。'}
     $range.NumberFormat='@'
     $range.Value2=[string]$step.Value
+    Write-Log "Excelセル入力先: $sheetName!$($range.Address())"
    }finally{Release-ExcelObject $range;Release-ExcelObject $sheet;Release-ExcelObject $sheets}
   }
   {$_ -in @('Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存')} {
