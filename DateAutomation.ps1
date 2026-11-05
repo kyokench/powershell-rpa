@@ -4,7 +4,7 @@ function Get-RpaToday {
 }
 function Expand-RpaDateTokens([string]$text, [datetime]$day) {
  $culture=[Globalization.CultureInfo]::InvariantCulture
- $text.Replace('{年月}',$day.ToString("yyyy'年'M'月'",$culture)).Replace('{日付}',$day.ToString('yyyy.MM.dd',$culture))
+ $text.Replace('{年月}',$day.ToString("yyyy'年'M'月'",$culture)).Replace('{日付}',$day.ToString('yyyy.MM.dd',$culture)).Replace('{年月日}',$day.ToString("yyyy'年'M'月'd'日'",$culture)).Replace('{年}',$day.ToString('yyyy',$culture)).Replace('{月}',$day.Month.ToString($culture)).Replace('{日}',$day.Day.ToString($culture))
 }
 function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday)) {
  if([string]::IsNullOrWhiteSpace($step.Value) -or $step.Value.Length -gt 100){throw '日付の書式を指定してください（100文字以内）。'}

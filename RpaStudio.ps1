@@ -90,7 +90,7 @@ $positionTimer.Start()
 $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
-$actions += 'メール作成'
+$actions += @('メール作成','Outlookをアクティブ化')
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
 [void]$grid.Columns.Add($actionColumn)
@@ -252,6 +252,7 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
    $sheetTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
    if($sheetTarget.Kind -ne 'Excel'){throw '「Excel操作設定」で対象シートを設定してください。'}
    if($s.Action -eq 'ExcelシートPDF保存' -and -not [IO.Path]::IsPathRooted([string]$s.Value)){throw 'PDFの保存先フォルダーを指定してください。'}
+   if($s.Action -eq 'ExcelシートPDF保存'){$null=Resolve-ExcelPdfName $sheetTarget (Get-RpaToday)}
   }
   if ($s.Action -in @('ID入力','パスワード入力')) {
    if(-not $s.ProtectedValue -or -not $s.ProtectedValue.StartsWith('DPAPI:v1:')) { throw "行 $($s.RowNumber): 「入力情報設定」でID・パスワードを登録してください。" }
@@ -597,7 +598,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
  $isDateRow=$row.Cells['Action'].Value -eq '日付入力'
  $dialog=New-Object Windows.Forms.Form
- $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,270)
+ $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,340)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
  foreach($item in @(@('操作',15),@('値（シート選択：{年月} 可／PDF：保存先フォルダー）',70),@('対象シート名（空欄は選択中・{年月} 可）',125),@('セル番地（例：B3、実行日で変える場合：A{日}）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
@@ -611,16 +612,18 @@ $excelSetup = New-Button 'Excel操作設定' {
  if($row.Cells['Action'].Value -in $excelActions -or $isDateRow){$valueBox.Text=[string]$row.Cells['Value'].Value}
  $browse=New-Object Windows.Forms.Button;$browse.Text='参照';$browse.SetBounds(470,92,87,28);$dialog.Controls.Add($browse)
  $monthFolder=New-Object Windows.Forms.Button
- $monthFolder.Text='年月フォルダーを追加';$monthFolder.SetBounds(12,236,210,28);$dialog.Controls.Add($monthFolder)
+ $monthFolder.Text='年月フォルダーを追加';$monthFolder.SetBounds(12,302,210,28);$dialog.Controls.Add($monthFolder)
  $monthFolder.Add_Click({
   $baseFolder=$valueBox.Text.Trim()
   if($baseFolder -and -not $baseFolder.Contains('{年月}')){$valueBox.Text=$baseFolder.TrimEnd('\','/')+'\{年月}'}
  })
  $sheetBox=New-Object Windows.Forms.TextBox;$sheetBox.SetBounds(12,148,545,26);$dialog.Controls.Add($sheetBox)
  $cellBox=New-Object Windows.Forms.TextBox;$cellBox.Text='A1';$cellBox.SetBounds(12,203,260,26);$dialog.Controls.Add($cellBox)
+ $pdfLabel=New-Object Windows.Forms.Label;$pdfLabel.Text='PDFファイル名（例：{日付}_日報.pdf）';$pdfLabel.SetBounds(12,233,545,22);$dialog.Controls.Add($pdfLabel)
+ $pdfName=New-Object Windows.Forms.TextBox;$pdfName.Text='{日付}.pdf';$pdfName.SetBounds(12,257,545,26);$dialog.Controls.Add($pdfName)
  try{
   $target=[string]$row.Cells['Target'].Value|ConvertFrom-Json -ErrorAction Stop
-  if($target.Kind -eq 'Excel'){$sheetBox.Text=[string]$target.Sheet;$cellBox.Text=[string]$target.Cell}
+  if($target.Kind -eq 'Excel'){$sheetBox.Text=[string]$target.Sheet;$cellBox.Text=[string]$target.Cell;if($target.FileName){$pdfName.Text=[string]$target.FileName}}
  }catch{}
  $browse.Add_Click({
   if($kind.SelectedItem -eq 'ExcelシートPDF保存'){
@@ -638,12 +641,13 @@ $excelSetup = New-Button 'Excel操作設定' {
   $cellBox.Enabled=$isCell
   $browse.Enabled=$kind.SelectedItem -in @('Excelブックを開く','ExcelシートPDF保存')
   $monthFolder.Visible=$kind.SelectedItem -eq 'ExcelシートPDF保存'
+  $pdfLabel.Visible=$monthFolder.Visible;$pdfName.Visible=$monthFolder.Visible
   $valueBox.Enabled=$kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','Excelセル入力','ExcelシートPDF保存')
  }
  $kind.Add_SelectedIndexChanged($updateExcelFields)
  & $updateExcelFields
- $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(375,236,85,28)
- $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(470,236,87,28)
+ $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(375,302,85,28)
+ $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(470,302,87,28)
  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
  $ok.Add_Click({
   if($kind.SelectedItem -in @('Excelセル入力','Excelセル選択','Excelセルコピー')){
@@ -653,13 +657,17 @@ $excelSetup = New-Button 'Excel操作設定' {
   if($kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','ExcelシートPDF保存') -and [string]::IsNullOrWhiteSpace($valueBox.Text)){
    [void][Windows.Forms.MessageBox]::Show('値を入力してください。','入力エラー');return
   }
+  if($kind.SelectedItem -eq 'ExcelシートPDF保存'){
+   try{$null=Resolve-ExcelPdfName ([pscustomobject]@{FileName=$pdfName.Text}) (Get-RpaToday)}
+   catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
+  }
   $dialog.DialogResult='OK'
  })
  try{
   if($dialog.ShowDialog($form) -eq 'OK'){
    $row.Cells['Action'].Value=if($isDateRow -and $kind.SelectedItem -eq 'Excelセル入力'){'日付入力'}else{[string]$kind.SelectedItem}
    $row.Cells['Value'].Value=if($valueBox.Enabled){$valueBox.Text}else{''}
-   $row.Cells['Target'].Value=if($sheetBox.Enabled){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text}|ConvertTo-Json -Compress}else{''}
+   $row.Cells['Target'].Value=if($sheetBox.Enabled){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text;FileName=if($pdfName.Visible){$pdfName.Text}else{''}}|ConvertTo-Json -Compress}else{''}
    Write-Log "行 $($row.Index+1): Excel操作を設定しました。"
   }
  }finally{$dialog.Dispose()}
@@ -671,7 +679,7 @@ $mailSetup=New-Button 'メール作成設定' {
  $dialog.Text='メール作成設定（Outlook下書き）';$dialog.ClientSize=New-Object Drawing.Size(640,500)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false
  $fields=@{}
- foreach($spec in @(@('To','宛先（任意・複数はセミコロン区切り）',12,26),@('Subject','件名',67,26),@('Body','本文（自由入力）',122,145),@('Attachments','添付パス（1行に1ファイル、{年月}・{日付} 可）',296,86))){
+ foreach($spec in @(@('To','宛先（任意・複数はセミコロン区切り）',12,26),@('Subject','件名（{日付}・{年月}・{年月日} 可）',67,26),@('Body','本文（自由入力）',122,145),@('Attachments','添付パス（1行に1ファイル、{年月}・{日付} 可）',296,86))){
   $label=New-Object Windows.Forms.Label;$label.Text=$spec[1];$label.SetBounds(12,$spec[2],610,22);$dialog.Controls.Add($label)
   $box=New-Object Windows.Forms.TextBox;$box.Multiline=$spec[3] -gt 26
   if($box.Multiline){$box.ScrollBars='Vertical';$box.AcceptsReturn=$true}
@@ -861,6 +869,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
    Write-Log "行 $($s.RowNumber) ($index / $($steps.Count)) : $($s.Action)"
    switch ($s.Action) {
     'メール作成' {Invoke-MailDraft $s}
+    'Outlookをアクティブ化' {Invoke-OutlookActivation}
     { $_ -in @('画像クリック','画像ダブルクリック','画像待機') } {Invoke-ImageStep $s}
     'ウィンドウをアクティブ化' {Invoke-WindowActivation $s}
     'RPA終了' { }

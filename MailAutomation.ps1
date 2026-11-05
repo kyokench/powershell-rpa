@@ -25,7 +25,7 @@ function Invoke-MailDraft($step) {
   try{$app=New-Object -ComObject Outlook.Application -ErrorAction Stop}
   catch{throw 'クラシック Outlookを起動できません。インストールとメールプロファイルの設定を確認してください。'}
   $item=$app.CreateItem(0)
-  $item.To=[string]$settings.To;$item.Subject=[string]$settings.Subject
+  $item.To=[string]$settings.To;$item.Subject=Expand-RpaDateTokens ([string]$settings.Subject) $day
   $item.BodyFormat=1;$item.Body=[string]$step.Value
   $item.Save();$saved=$true
   if($files.Count){
@@ -34,8 +34,26 @@ function Invoke-MailDraft($step) {
    $item.Save()
   }
   Write-Log "Outlookの下書きに保存しました（添付 $($files.Count) 件）。"
+  $item.Display($false)
+  $inspector=$null
+  try{$inspector=$item.GetInspector;$inspector.Activate()}finally{Release-MailObject $inspector}
  } catch {
-  if($saved){throw "添付付き下書きを完成できませんでした。Outlookに途中の下書きが残っている可能性があります: $($_.Exception.Message)"}
+  if($saved){throw "下書きの添付または表示処理に失敗しました。Outlookに保存された下書きを確認してください: $($_.Exception.Message)"}
   throw
  } finally {Release-MailObject $attachments;Release-MailObject $item;Release-MailObject $app}
+}
+function Invoke-OutlookActivation {
+ Wait-Rpa 0
+ $app=$null;$window=$null;$session=$null;$folder=$null
+ try{
+  $app=New-Object -ComObject Outlook.Application -ErrorAction Stop
+  $window=$app.ActiveInspector()
+  if(-not $window){$window=$app.ActiveExplorer()}
+  if(-not $window){
+   $session=$app.GetNamespace('MAPI');$folder=$session.GetDefaultFolder(6)
+   $window=$folder.GetExplorer();$window.Display()
+  }
+  $window.Activate()
+  Write-Log 'Outlookのウィンドウをアクティブ化しました。'
+ }finally{Release-MailObject $window;Release-MailObject $folder;Release-MailObject $session;Release-MailObject $app}
 }

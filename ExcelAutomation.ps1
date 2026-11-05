@@ -12,6 +12,21 @@ function Assert-ExcelBook {
  if($null -eq $script:ExcelBook){throw '先に「Excelブックを開く」を実行してください。'}
  try{$null=$script:ExcelBook.Name}catch{throw 'Excelブックが閉じられています。「Excelブックを開く」から再実行してください。'}
 }
+function Save-ExcelBeforeClose {
+ if(-not $script:ExcelBook.Saved){
+  if($script:ExcelBook.ReadOnly){throw '未保存のブックは読み取り専用のため自動保存できません。'}
+  $script:ExcelBook.Save()
+  if(-not $script:ExcelBook.Saved){throw 'Excelの自動保存が完了しませんでした。保存先やExcelのダイアログを確認してください。'}
+  Write-Log 'Excelブックを自動保存しました。'
+ }
+}
+function Resolve-ExcelPdfName($target,[datetime]$day) {
+ $template=if([string]::IsNullOrWhiteSpace([string]$target.FileName)){'{日付}.pdf'}else{[string]$target.FileName}
+ $name=Expand-RpaDateTokens $template $day
+ if($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $name.EndsWith('.') -or $name.EndsWith(' ')){throw 'PDFファイル名に使用できない文字が含まれています。保存先フォルダーは別の欄で指定してください。'}
+ if(-not $name.EndsWith('.pdf',[StringComparison]::OrdinalIgnoreCase)){$name+='.pdf'}
+ return $name
+}
 function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  $dynamic=$path.Contains('{年月}')
  $folder=[IO.Path]::GetFullPath((Expand-RpaDateTokens $path $day))
@@ -42,7 +57,7 @@ function Invoke-ExcelStep($step){
    if($script:ExcelBook){
     Assert-ExcelBook
     if($script:ExcelBook.FullName -ieq $path){return}
-    if(-not $script:ExcelBook.Saved){throw '現在のExcelブックに未保存の変更があります。先に「Excelブック保存」を実行してください。'}
+    Save-ExcelBeforeClose
     $script:ExcelBook.Close($false);Release-ExcelObject $script:ExcelBook;$script:ExcelBook=$null
    }
    $books=$null
@@ -108,9 +123,12 @@ function Invoke-ExcelStep($step){
      'Excelシート印刷' { $sheet.PrintOut() }
      'ExcelシートPDF保存' {
       $folder=Resolve-ExcelPdfFolder $step.Value $day
-      $destination=Join-Path $folder ($day.ToString('yyyy.MM.dd',[Globalization.CultureInfo]::InvariantCulture)+'.pdf')
-      if(Test-Path -LiteralPath $destination){throw "同名のPDFが既にあります: $destination"}
-      $sheet.ExportAsFixedFormat(0,$destination,0,$true,$false)
+      $destination=Join-Path $folder (Resolve-ExcelPdfName $target $day)
+      $alerts=$script:ExcelApp.DisplayAlerts
+      try{
+       $script:ExcelApp.DisplayAlerts=$false
+       $sheet.ExportAsFixedFormat(0,$destination,0,$true,$false)
+      }finally{$script:ExcelApp.DisplayAlerts=$alerts}
       Write-Log "PDF保存: $destination"
      }
     }
@@ -123,7 +141,7 @@ function Invoke-ExcelStep($step){
   }
   'Excelブックを閉じる' {
    Assert-ExcelBook
-   if(-not $script:ExcelBook.Saved){throw '未保存の変更があります。先に「Excelブック保存」を実行してください。'}
+   Save-ExcelBeforeClose
    $script:ExcelBook.Close($false)
    Release-ExcelObject $script:ExcelBook;$script:ExcelBook=$null;$script:ExcelSheetName=$null
    # Do not close additional workbooks the user may have opened in this instance.
