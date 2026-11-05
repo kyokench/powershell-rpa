@@ -10,6 +10,7 @@ Add-Type -AssemblyName System.Security
 . (Join-Path $PSScriptRoot 'WindowAutomation.ps1')
 . (Join-Path $PSScriptRoot 'ImageAutomation.ps1')
 . (Join-Path $PSScriptRoot 'MailAutomation.ps1')
+. (Join-Path $PSScriptRoot 'FlowAutomation.ps1')
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -91,6 +92,7 @@ $excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actions += @('メール作成','Outlookをアクティブ化')
+$actions += @('日付条件If','Else','EndIf')
 $actionColumn.Name = 'Action'; $actionColumn.HeaderText = '操作'
 $actionColumn.Items.AddRange([object[]]$actions); $actionColumn.FillWeight = 32
 [void]$grid.Columns.Add($actionColumn)
@@ -222,6 +224,7 @@ function Get-Steps([switch]$SelectedOnly) {
 }
 function Check-Steps($steps, [switch]$DecryptSecrets) {
  if ($steps.Count -eq 0) { throw '操作を追加してください。' }
+ Assert-ScenarioFlow $steps
  foreach ($s in $steps) {
   if ($s.Action -notin $actions) { throw "未対応の操作: $($s.Action)" }
   if($s.Action -eq 'メール作成'){$null=Read-MailTarget $s.Target}
@@ -338,7 +341,7 @@ function Export-ScenarioFile($destination, $steps) {
   $source=[IO.File]::ReadAllText($script:RuntimeSourcePath)
  }else{
   $source = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'RpaStudio.ps1'))
-  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1','ImageAutomation.ps1','MailAutomation.ps1')){
+  foreach($moduleName in @('ElementAutomation.ps1','WebAutomation.ps1','ExcelAutomation.ps1','DateAutomation.ps1','WindowAutomation.ps1','ImageAutomation.ps1','MailAutomation.ps1','FlowAutomation.ps1')){
    $module=[IO.File]::ReadAllText((Join-Path $PSScriptRoot $moduleName))
    $source=$source.Replace((". (Join-Path `$PSScriptRoot '"+$moduleName+"')"),$module)
   }
@@ -537,6 +540,24 @@ $imageSetup=New-Button '画像設定' {
   if($preview){$preview.Image=$null};if($dialog){$dialog.Dispose()};if($decoded){$decoded.Bitmap.Dispose()}
  }
 }
+$conditionSetup=New-Button '日付条件設定' {
+ if($grid.SelectedRows.Count -ne 1){Write-Log 'Ifを設定する行を1行選択してください。';return}
+ [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
+ $dialog=New-Object Windows.Forms.Form
+ $dialog.Text='日付条件If設定';$dialog.ClientSize=New-Object Drawing.Size(430,150);$dialog.StartPosition='CenterParent'
+ $label=New-Object Windows.Forms.Label;$label.Text='実行日の条件（例：日=1、日!=1、月=12）';$label.SetBounds(12,12,400,28);$dialog.Controls.Add($label)
+ $input=New-Object Windows.Forms.TextBox;$input.Text='日=1';$input.SetBounds(12,48,400,28);$dialog.Controls.Add($input)
+ if($row.Cells['Action'].Value -eq '日付条件If'){$input.Text=[string]$row.Cells['Value'].Value}
+ $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(220,100,90,30);$dialog.Controls.Add($ok)
+ $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(320,100,92,30);$dialog.Controls.Add($cancel);$dialog.CancelButton=$cancel
+ $ok.Add_Click({
+  try{$null=Read-DateCondition $input.Text}
+  catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'条件エラー');return}
+  $row.Cells['Action'].Value='日付条件If';$row.Cells['Value'].Value=$input.Text;$row.Cells['Target'].Value=''
+  $dialog.DialogResult='OK'
+ })
+ try{[void]$dialog.ShowDialog($form)}finally{$dialog.Dispose()}
+}
 $dateSetup = New-Button '日付入力設定' {
  if($grid.SelectedRows.Count -ne 1){Write-Log '日付入力を設定する行を1行選択してください。';return}
  [void]$grid.EndEdit();$row=$grid.SelectedRows[0]
@@ -600,7 +621,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='Excel操作設定';$dialog.ClientSize=New-Object Drawing.Size(570,340)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('操作',15),@('値（シート選択：{年月} 可／PDF：保存先フォルダー）',70),@('対象シート名（空欄は選択中・{年月} 可）',125),@('セル番地（例：B3、実行日で変える場合：A{日}）',180))){
+ foreach($item in @(@('操作',15),@('値（シート選択：{年月}・{年月-1} 可／PDF：保存先）',70),@('対象シート名（空欄は選択中・前月は {年月-1}）',125),@('セル番地（例：A{日}、前日：A{日-1}、翌日：A{日+1}）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)
@@ -853,6 +874,8 @@ function Invoke-Scenario([switch]$SelectedOnly) {
  $script:running = $true; $script:cancel = $false
  $exitRequested=$false
  $script:ScenarioDateBase=Get-RpaToday
+ $flowStack=New-Object 'System.Collections.Generic.List[object]'
+ $flowActive=$true
  $activeStep=$null
  foreach($row in $grid.Rows) { $row.Cells['State'].Value=''; $row.DefaultCellStyle=New-Object Windows.Forms.DataGridViewCellStyle }
  $executionLabel.Text='開始待ち（3秒）'
@@ -864,6 +887,17 @@ function Invoke-Scenario([switch]$SelectedOnly) {
   foreach ($s in $steps) {
    Wait-Rpa 0
    $activeStep=$s; $index++
+   if($s.Action -in @('日付条件If','Else','EndIf')){
+    $flowActive=Invoke-DateFlow $s $flowStack $flowActive $script:ScenarioDateBase
+    Set-StepState $s.RowNumber '完了';$activeStep=$null
+    continue
+   }
+   if(-not $flowActive){
+    Set-StepState $s.RowNumber 'スキップ'
+    Write-Log "行 $($s.RowNumber): 条件によりスキップ"
+    $activeStep=$null
+    continue
+   }
    Set-StepState $s.RowNumber '実行中'
    $executionLabel.Text="実行中: 行 $($s.RowNumber) / $($s.Action)（$index / $($steps.Count)）"
    Write-Log "行 $($s.RowNumber) ($index / $($steps.Count)) : $($s.Action)"

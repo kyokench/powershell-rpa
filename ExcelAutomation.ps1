@@ -28,7 +28,7 @@ function Resolve-ExcelPdfName($target,[datetime]$day) {
  return $name
 }
 function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
- $dynamic=$path.Contains('{年月}')
+ $dynamic=$path -match '\{年月(?:[+-][0-9]{1,5})?\}'
  $folder=[IO.Path]::GetFullPath((Expand-RpaDateTokens $path $day))
  if(Test-Path -LiteralPath $folder -PathType Container){return $folder}
  $parent=[IO.Path]::GetDirectoryName($folder)
@@ -39,8 +39,8 @@ function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  throw "PDFの保存先フォルダーが見つかりません: $folder"
 }
 function Resolve-ExcelCellAddress([string]$address,[datetime]$day) {
- if($address -notmatch '^\$?[A-Za-z]{1,3}\$?(?:[1-9][0-9]{0,6}|\{日\})$'){throw 'セル番地は A1 または A{日} のように指定してください。'}
- $address.Replace('{日}',$day.Day.ToString([Globalization.CultureInfo]::InvariantCulture))
+ if($address -notmatch '^\$?[A-Za-z]{1,3}\$?(?:[1-9][0-9]{0,6}|\{日(?:[+-][0-9]{1,5})?\})$'){throw 'セル番地は A1、A{日}、A{日-1} のように指定してください。'}
+ Expand-RpaDateTokens $address $day
 }
 function Set-ExcelCellClipboard([string]$value) {
  if($value.Length){[Windows.Forms.Clipboard]::SetText($value)}

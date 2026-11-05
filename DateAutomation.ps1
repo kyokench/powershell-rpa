@@ -4,7 +4,26 @@ function Get-RpaToday {
 }
 function Expand-RpaDateTokens([string]$text, [datetime]$day) {
  $culture=[Globalization.CultureInfo]::InvariantCulture
- $text.Replace('{年月}',$day.ToString("yyyy'年'M'月'",$culture)).Replace('{日付}',$day.ToString('yyyy.MM.dd',$culture)).Replace('{年月日}',$day.ToString("yyyy'年'M'月'd'日'",$culture)).Replace('{年}',$day.ToString('yyyy',$culture)).Replace('{月}',$day.Month.ToString($culture)).Replace('{日}',$day.Day.ToString($culture))
+ [regex]::Replace($text,'\{(年月日|日付|年月|年|月|日)([+-][0-9]{1,5})?\}',[Text.RegularExpressions.MatchEvaluator]{
+  param($match)
+  $part=$match.Groups[1].Value;$offset=0
+  if($match.Groups[2].Success){$offset=[int]$match.Groups[2].Value}
+  if([Math]::Abs($offset) -gt 36500){throw '日付の加減算が大きすぎます。'}
+  $date=switch($part){
+   '年月' {$day.AddMonths($offset)}
+   '年' {$day.AddYears($offset)}
+   '月' {$day.AddMonths($offset)}
+   default {$day.AddDays($offset)}
+  }
+  switch($part){
+   '年月' {$date.ToString("yyyy'年'M'月'",$culture)}
+   '年月日' {$date.ToString("yyyy'年'M'月'd'日'",$culture)}
+   '日付' {$date.ToString('yyyy.MM.dd',$culture)}
+   '年' {$date.ToString('yyyy',$culture)}
+   '月' {$date.Month.ToString($culture)}
+   '日' {$date.Day.ToString($culture)}
+  }
+ })
 }
 function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday)) {
  if([string]::IsNullOrWhiteSpace($step.Value) -or $step.Value.Length -gt 100){throw '日付の書式を指定してください（100文字以内）。'}
