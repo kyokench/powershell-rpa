@@ -11,9 +11,15 @@ function Release-MailObject($object) {
   [void][Runtime.InteropServices.Marshal]::ReleaseComObject($object)
  }
 }
+function Get-MailActivation($settings) {
+ if($null -eq $settings.ActivateAfterCreate){return $true}
+ if($settings.ActivateAfterCreate -isnot [bool]){throw 'メールのアクティブ化設定はオンまたはオフを指定してください。'}
+ return $settings.ActivateAfterCreate
+}
 function Invoke-MailDraft($step) {
  Wait-Rpa 0
  $settings=Read-MailTarget $step.Target
+ $activate=Get-MailActivation $settings
  $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
  $files=@(foreach($file in $settings.Attachments){
   $path=Expand-RpaDateTokens $file $day
@@ -34,9 +40,11 @@ function Invoke-MailDraft($step) {
    $item.Save()
   }
   Write-Log "Outlookの下書きに保存しました（添付 $($files.Count) 件）。"
-  $item.Display($false)
-  $inspector=$null
-  try{$inspector=$item.GetInspector;$inspector.Activate()}finally{Release-MailObject $inspector}
+  if($activate){
+   $item.Display($false)
+   $inspector=$null
+   try{$inspector=$item.GetInspector;$inspector.Activate()}finally{Release-MailObject $inspector}
+  }
  } catch {
   if($saved){throw "下書きの添付または表示処理に失敗しました。Outlookに保存された下書きを確認してください: $($_.Exception.Message)"}
   throw

@@ -683,8 +683,9 @@ $excelSetup = New-Button 'Excel操作設定' {
   $sheetBox.Enabled=$isCell -or $kind.SelectedItem -in @('Excelシート印刷','ExcelシートPDF保存')
   $cellBox.Enabled=$isCell
   $browse.Enabled=$kind.SelectedItem -in @('Excelブックを開く','ExcelシートPDF保存')
-  $monthFolder.Visible=$kind.SelectedItem -eq 'ExcelシートPDF保存'
-  $pdfLabel.Visible=$monthFolder.Visible;$pdfName.Visible=$monthFolder.Visible
+  $isPdf=$kind.SelectedItem -eq 'ExcelシートPDF保存'
+  $monthFolder.Visible=$isPdf
+  $pdfLabel.Visible=$isPdf;$pdfName.Visible=$isPdf
   $valueBox.Enabled=$kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','Excelセル入力','ExcelシートPDF保存')
  }
  $kind.Add_SelectedIndexChanged($updateExcelFields)
@@ -710,7 +711,7 @@ $excelSetup = New-Button 'Excel操作設定' {
   if($dialog.ShowDialog($form) -eq 'OK'){
    $row.Cells['Action'].Value=if($isDateRow -and $kind.SelectedItem -eq 'Excelセル入力'){'日付入力'}else{[string]$kind.SelectedItem}
    $row.Cells['Value'].Value=if($valueBox.Enabled){$valueBox.Text}else{''}
-   $row.Cells['Target'].Value=if($sheetBox.Enabled){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text;FileName=if($pdfName.Visible){$pdfName.Text}else{''}}|ConvertTo-Json -Compress}else{''}
+   $row.Cells['Target'].Value=if($sheetBox.Enabled){@{Kind='Excel';Sheet=$sheetBox.Text;Cell=$cellBox.Text;FileName=if($kind.SelectedItem -eq 'ExcelシートPDF保存'){$pdfName.Text}else{''}}|ConvertTo-Json -Compress}else{''}
    Write-Log "行 $($row.Index+1): Excel操作を設定しました。"
   }
  }finally{$dialog.Dispose()}
@@ -728,6 +729,9 @@ $mailSetup=New-Button 'メール作成設定' {
   if($box.Multiline){$box.ScrollBars='Vertical';$box.AcceptsReturn=$true}
   $box.SetBounds(12,($spec[2]+23),610,$spec[3]);$dialog.Controls.Add($box);$fields[$spec[0]]=$box
  }
+ $activateMail=New-Object Windows.Forms.CheckBox
+ $activateMail.Text='作成後にメールを表示してアクティブにする'
+ $activateMail.Checked=$true;$activateMail.SetBounds(155,425,465,30);$dialog.Controls.Add($activateMail)
  $fields.Body.Text='{noncoverpage}'
  if($row.Cells['Action'].Value -eq 'メール作成'){
   $fields.Body.Text=[string]$row.Cells['Value'].Value
@@ -735,6 +739,7 @@ $mailSetup=New-Button 'メール作成設定' {
    $old=Read-MailTarget ([string]$row.Cells['Target'].Value)
    $fields.To.Text=[string]$old.To;$fields.Subject.Text=[string]$old.Subject
    $fields.Attachments.Lines=[string[]]@($old.Attachments)
+   $activateMail.Checked=Get-MailActivation $old
   }catch{}
  }
  $browse=New-Object Windows.Forms.Button;$browse.Text='添付を選択';$browse.SetBounds(12,425,125,30)
@@ -748,7 +753,7 @@ $mailSetup=New-Button 'メール作成設定' {
  $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.SetBounds(535,458,87,30);$cancel.DialogResult='Cancel'
  $dialog.Controls.Add($browse);$dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.CancelButton=$cancel
  $ok.Add_Click({
-  $json=@{Kind='Mail';To=$fields.To.Text;Subject=$fields.Subject.Text;Attachments=@($fields.Attachments.Lines|ForEach-Object{$_.Trim()}|Where-Object{$_})}|ConvertTo-Json -Compress
+  $json=@{Kind='Mail';To=$fields.To.Text;Subject=$fields.Subject.Text;ActivateAfterCreate=$activateMail.Checked;Attachments=@($fields.Attachments.Lines|ForEach-Object{$_.Trim()}|Where-Object{$_})}|ConvertTo-Json -Compress
   try{$null=Read-MailTarget $json}catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
   $row.Cells['Action'].Value='メール作成';$row.Cells['Value'].Value=$fields.Body.Text;$row.Cells['Target'].Value=$json
   $dialog.DialogResult='OK'
