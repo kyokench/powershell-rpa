@@ -88,7 +88,8 @@ $positionTimer.Add_Tick({
  $positionLabel.Text = "現在のマウス位置  X: $($p.X)   Y: $($p.Y)    |    Ctrl / Shift + 行見出しクリックで複数選択"
 })
 $positionTimer.Start()
-$excelActions=@('Excelブックを開く','Excelシート選択','Excelセル入力','Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
+$excelCellActions=@('Excelセル入力','Excelセル選択','Excelセルコピー','Excelセル値を変数に保存')
+$excelActions=@('Excelブックを開く','Excelシート選択')+$excelCellActions+@('Excelシート印刷','ExcelシートPDF保存','Excelブック保存','Excelブックを閉じる')
 $actions = @('待機','マウス移動','左クリック','ダブルクリック','右クリック','文字入力','キー送信','URLを開く','アプリ起動','要素クリック','要素入力','要素フォーカス','ID入力','パスワード入力','Web用URLを開く','ウェブ要素クリック','ウェブ要素入力','日付入力','ウィンドウをアクティブ化','RPA終了','画像クリック','画像ダブルクリック','画像待機') + $excelActions
 $actionColumn = New-Object Windows.Forms.DataGridViewComboBoxColumn
 $actions += @('メール作成','Outlookをアクティブ化')
@@ -116,6 +117,16 @@ $repeatColumn.Name='Repeat';$repeatColumn.HeaderText='キー回数';$repeatColum
 $repeatColumn.DefaultCellStyle.NullValue='1'
 [void]$grid.Columns.Add($repeatColumn)
 $repeatColumn.DisplayIndex=2
+$memoColumn=New-Object Windows.Forms.DataGridViewTextBoxColumn
+$memoColumn.Name='Memo';$memoColumn.HeaderText='備考';$memoColumn.FillWeight=60
+[void]$grid.Columns.Add($memoColumn)
+$grid.RowHeadersWidth=66
+$grid.Add_RowPostPaint({
+ param($sender,$e)
+ $bounds=[Drawing.Rectangle]::new($e.RowBounds.Left+17,$e.RowBounds.Top,$sender.RowHeadersWidth-20,$e.RowBounds.Height)
+ $color=if($sender.Rows[$e.RowIndex].Selected){[Drawing.SystemColors]::HighlightText}else{[Drawing.SystemColors]::ControlText}
+ [Windows.Forms.TextRenderer]::DrawText($e.Graphics,[string]($e.RowIndex+1),$sender.Font,$bounds,$color,([Windows.Forms.TextFormatFlags]::Right -bor [Windows.Forms.TextFormatFlags]::VerticalCenter))
+})
 $grid.Add_CellFormatting({param($sender,$e)
  if($e.RowIndex -ge 0 -and $grid.Columns[$e.ColumnIndex].Name -eq 'Target' -and $grid.Rows[$e.RowIndex].Cells['Action'].Value -in @('画像クリック','画像ダブルクリック','画像待機')){
   try{
@@ -158,6 +169,7 @@ function Add-StoredStep($step) {
  $index=$grid.Rows.Add($step.Action,$step.Value,$step.X,$step.Y,$step.Delay,$step.Target)
  $grid.Rows[$index].Cells['ProtectedValue'].Value=[string]$step.ProtectedValue
  $grid.Rows[$index].Cells['DateOptions'].Value=[string]$step.DateOptions
+ $grid.Rows[$index].Cells['Memo'].Value=[string]$step.Memo
  $grid.Rows[$index].Cells['Repeat'].Value=if([string]::IsNullOrWhiteSpace([string]$step.Repeat)){'1'}else{[string]$step.Repeat}
  if($step.Action -in @('ID入力','パスワード入力')) { $grid.Rows[$index].Cells['Value'].Value='[暗号化済み]' }
 }
@@ -219,7 +231,7 @@ function Get-Steps([switch]$SelectedOnly) {
   if ($SelectedOnly -and -not $r.Selected) { continue }
   $value=if($r.Cells['Action'].Value -in @('ID入力','パスワード入力')){'[暗号化済み]'}else{[string]$r.Cells['Value'].Value}
   $repeat=if([string]::IsNullOrWhiteSpace([string]$r.Cells['Repeat'].Value)){'1'}else{[string]$r.Cells['Repeat'].Value}
-  [pscustomobject]@{ RowNumber=$r.Index+1; Action=[string]$r.Cells['Action'].Value; Value=$value; X=[string]$r.Cells['X'].Value; Y=[string]$r.Cells['Y'].Value; Delay=[string]$r.Cells['Delay'].Value; Target=[string]$r.Cells['Target'].Value; ProtectedValue=[string]$r.Cells['ProtectedValue'].Value; DateOptions=[string]$r.Cells['DateOptions'].Value; Repeat=$repeat }
+  [pscustomobject]@{ RowNumber=$r.Index+1; Action=[string]$r.Cells['Action'].Value; Value=$value; X=[string]$r.Cells['X'].Value; Y=[string]$r.Cells['Y'].Value; Delay=[string]$r.Cells['Delay'].Value; Target=[string]$r.Cells['Target'].Value; ProtectedValue=[string]$r.Cells['ProtectedValue'].Value; DateOptions=[string]$r.Cells['DateOptions'].Value; Repeat=$repeat; Memo=[string]$r.Cells['Memo'].Value }
  }
 }
 function Check-Steps($steps, [switch]$DecryptSecrets) {
@@ -239,14 +251,15 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
   }
   $dateTarget=$null;$excelTarget=$null
   if($s.Action -eq '日付入力'){
-   $null=Get-DateInputText $s
+   $null=Get-DateInputText $s -ValidateTemplate
    if($s.Target){$dateTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop}
   }
   if($s.Action -eq 'Excelブックを開く'){
    if(-not [IO.Path]::IsPathRooted([string]$s.Value) -or [IO.Path]::GetExtension([string]$s.Value) -notin @('.xlsx','.xlsm','.xlsb','.xls')){throw 'ExcelブックにはExcelファイルの絶対パスを指定してください。'}
   }
   if($s.Action -eq 'Excelシート選択' -and [string]::IsNullOrWhiteSpace($s.Value)){throw 'Excelのシート名を値に入力してください。'}
-  if($s.Action -in @('Excelセル入力','Excelセル選択','Excelセルコピー') -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
+  if($s.Action -eq 'Excelセル値を変数に保存'){Assert-RpaVariableName $s.Value.Trim()}
+  if($s.Action -in $excelCellActions -or ($dateTarget -and $dateTarget.Kind -eq 'Excel')){
    $excelTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
    if($excelTarget.Kind -ne 'Excel'){throw '「Excel操作設定」でセルを設定してください。'}
    $null=Resolve-ExcelCellAddress $excelTarget.Cell ([datetime]::Today)
@@ -255,7 +268,7 @@ function Check-Steps($steps, [switch]$DecryptSecrets) {
    $sheetTarget=$s.Target|ConvertFrom-Json -ErrorAction Stop
    if($sheetTarget.Kind -ne 'Excel'){throw '「Excel操作設定」で対象シートを設定してください。'}
    if($s.Action -eq 'ExcelシートPDF保存' -and -not [IO.Path]::IsPathRooted([string]$s.Value)){throw 'PDFの保存先フォルダーを指定してください。'}
-   if($s.Action -eq 'ExcelシートPDF保存'){$null=Resolve-ExcelPdfName $sheetTarget (Get-RpaToday)}
+   if($s.Action -eq 'ExcelシートPDF保存'){$null=Resolve-ExcelPdfName $sheetTarget (Get-RpaToday) -ValidateTemplate}
   }
   if ($s.Action -in @('ID入力','パスワード入力')) {
    if(-not $s.ProtectedValue -or -not $s.ProtectedValue.StartsWith('DPAPI:v1:')) { throw "行 $($s.RowNumber): 「入力情報設定」でID・パスワードを登録してください。" }
@@ -325,6 +338,7 @@ function Copy-SelectedSteps {
   $grid.Rows[$index].Cells['ProtectedValue'].Value=$step.ProtectedValue
   $grid.Rows[$index].Cells['DateOptions'].Value=$step.DateOptions
   $grid.Rows[$index].Cells['Repeat'].Value=$step.Repeat
+  $grid.Rows[$index].Cells['Memo'].Value=$step.Memo
  }
  $grid.ClearSelection();$grid.CurrentCell=$grid.Rows[[int]$insertIndex].Cells['Action']
  for($offset=0;$offset -lt $steps.Count;$offset++){$grid.Rows[[int]$insertIndex+$offset].Selected=$true}
@@ -586,13 +600,16 @@ $dateSetup = New-Button '日付入力設定' {
  $dialog=New-Object Windows.Forms.Form
  $dialog.Text='日付入力設定';$dialog.ClientSize=New-Object Drawing.Size(570,310)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
- foreach($item in @(@('基準日',15),@('指定日',70),@('加減算する日数（昨日=-1、明日=1）',125),@('書式（選択または直接入力）',180))){
+ foreach($item in @(@('基準日',15),@('固定の日付／月内の日（該当する基準日の場合）',70),@('基準日から加減算する日数',125),@('書式（選択または直接入力）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
  }
  $basisBox=New-Object Windows.Forms.ComboBox;$basisBox.DropDownStyle='DropDownList';$basisBox.SetBounds(12,38,545,26)
- $basisBox.Items.AddRange([object[]]@('実行日（日本時間）','指定日'));$basisBox.SelectedIndex=0;$dialog.Controls.Add($basisBox)
+ $basisKeys=@('Today','Fixed','MonthStart','MonthDay','MonthEnd')
+ $basisBox.Items.AddRange([object[]]@('実行日（日本時間）','固定の日付','月初（1日）','月内の指定日','月末'));$basisBox.SelectedIndex=0;$dialog.Controls.Add($basisBox)
  $fixedPicker=New-Object Windows.Forms.DateTimePicker;$fixedPicker.Format='Custom';$fixedPicker.CustomFormat='yyyy/MM/dd';$fixedPicker.Value=Get-RpaToday
  $fixedPicker.SetBounds(12,93,250,26);$dialog.Controls.Add($fixedPicker)
+ $monthDayBox=New-Object Windows.Forms.NumericUpDown
+ $monthDayBox.Minimum=1;$monthDayBox.Maximum=31;$monthDayBox.SetBounds(12,93,250,26);$dialog.Controls.Add($monthDayBox)
  $offsetBox=New-Object Windows.Forms.NumericUpDown;$offsetBox.Minimum=-36500;$offsetBox.Maximum=36500;$offsetBox.SetBounds(12,148,250,26);$dialog.Controls.Add($offsetBox)
  $formatBox=New-Object Windows.Forms.ComboBox;$formatBox.DropDownStyle='DropDown';$formatBox.SetBounds(12,203,545,26)
  $formatBox.Items.AddRange([object[]]@('yyyy','yy','MM','M','dd','d','yyyy/MM/dd','yyyy/M/d','yyyy-MM-dd','yyyy.MM.dd','yyyyMMdd','yyyy/MM','yyyy-MM','yyyy.MM','MM/dd','M/d','MM.dd','M.d','MMdd','yyyy年M月d日','yyyy年MM月dd日','M月d日','MM月dd日','yyyy年','M月','MM月','d日','dd日','yyyy/MM/dd(ddd)'))
@@ -601,20 +618,28 @@ $dateSetup = New-Button '日付入力設定' {
   $formatBox.Text=[string]$row.Cells['Value'].Value
   try{
    $options=[string]$row.Cells['DateOptions'].Value|ConvertFrom-Json -ErrorAction Stop
+   $basisIndex=[array]::IndexOf($basisKeys,$options.Basis)
+   if($basisIndex -ge 0){$basisBox.SelectedIndex=$basisIndex}
+   if($options.Basis -eq 'MonthDay'){$monthDayBox.Value=[decimal]$options.MonthDay}
    if($options.Basis -eq 'Fixed'){$basisBox.SelectedIndex=1;$fixedPicker.Value=[datetime]::ParseExact([string]$options.FixedDate,'yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture)}
    $offsetBox.Value=[decimal]$options.OffsetDays
   }catch{}
  }
  $preview=New-Object Windows.Forms.Label;$preview.SetBounds(12,240,545,30);$dialog.Controls.Add($preview)
+ $getDateSettings={
+  @{Basis=$basisKeys[$basisBox.SelectedIndex];FixedDate=$fixedPicker.Value.ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture);MonthDay=[int]$monthDayBox.Value;OffsetDays=[int]$offsetBox.Value}|ConvertTo-Json -Compress
+ }
  $updatePreview={
-  $fixedPicker.Enabled=$basisBox.SelectedIndex -eq 1
+  $fixedPicker.Visible=$basisBox.SelectedIndex -eq 1
+  $monthDayBox.Visible=$basisBox.SelectedIndex -eq 3
   try{
-   $settings=@{Basis=if($basisBox.SelectedIndex -eq 1){'Fixed'}else{'Today'};FixedDate=$fixedPicker.Value.ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture);OffsetDays=[int]$offsetBox.Value}|ConvertTo-Json -Compress
+   $settings=& $getDateSettings
    $sample=Get-DateInputText ([pscustomobject]@{Value=$formatBox.Text;DateOptions=$settings})
    $preview.Text='入力例: '+$sample;$preview.ForeColor=[Drawing.Color]::DarkSlateBlue
-  }catch{$preview.Text='入力例: 設定を確認してください';$preview.ForeColor=[Drawing.Color]::Firebrick}
+  }catch{$preview.Text=$_.Exception.Message;$preview.ForeColor=[Drawing.Color]::Firebrick}
  }
  $basisBox.Add_SelectedIndexChanged($updatePreview);$fixedPicker.Add_ValueChanged($updatePreview)
+ $monthDayBox.Add_ValueChanged($updatePreview)
  $offsetBox.Add_ValueChanged($updatePreview);$formatBox.Add_TextChanged($updatePreview)
  & $updatePreview
  $ok=New-Object Windows.Forms.Button;$ok.Text='設定';$ok.SetBounds(375,273,85,28)
@@ -622,14 +647,14 @@ $dateSetup = New-Button '日付入力設定' {
  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
  $ok.Add_Click({
   try{
-   $settings=@{Basis=if($basisBox.SelectedIndex -eq 1){'Fixed'}else{'Today'};FixedDate=$fixedPicker.Value.ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture);OffsetDays=[int]$offsetBox.Value}|ConvertTo-Json -Compress
-   $null=Get-DateInputText ([pscustomobject]@{Value=$formatBox.Text;DateOptions=$settings})
+   $settings=& $getDateSettings
+   $null=Get-DateInputText ([pscustomobject]@{Value=$formatBox.Text;DateOptions=$settings}) -ValidateTemplate
    $dialog.DialogResult='OK'
   }catch{[void][Windows.Forms.MessageBox]::Show($_.Exception.Message,'日付設定エラー')}
  })
  try{
   if($dialog.ShowDialog($form) -eq 'OK'){
-   $settings=@{Basis=if($basisBox.SelectedIndex -eq 1){'Fixed'}else{'Today'};FixedDate=$fixedPicker.Value.ToString('yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture);OffsetDays=[int]$offsetBox.Value}|ConvertTo-Json -Compress
+   $settings=& $getDateSettings
    if($row.Cells['Action'].Value -notin @('日付入力','要素入力','ウェブ要素入力','Excelセル入力','ID入力','パスワード入力','要素クリック','ウェブ要素クリック','要素フォーカス')){$row.Cells['Target'].Value=''}
    $row.Cells['Action'].Value='日付入力';$row.Cells['Value'].Value=$formatBox.Text;$row.Cells['DateOptions'].Value=$settings
    Write-Log "行 $($row.Index+1): 日付入力を設定しました。"
@@ -645,6 +670,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false;$dialog.MinimizeBox=$false
  foreach($item in @(@('操作',15),@('値（シート選択：{年月}・{年月-1} 可／PDF：保存先）',70),@('対象シート名（空欄は選択中・前月は {年月-1}）',125),@('セル番地（前日：A{日-1}／行番号加算：G{日行+2}）',180))){
   $label=New-Object Windows.Forms.Label;$label.Text=$item[0];$label.SetBounds(12,$item[1],545,22);$dialog.Controls.Add($label)
+  if($item[1] -eq 70){$valueLabel=$label}
  }
  $kind=New-Object Windows.Forms.ComboBox;$kind.DropDownStyle='DropDownList';$kind.SetBounds(12,38,545,26)
  $kind.Items.AddRange([object[]]$excelActions);$kind.SelectedIndex=0
@@ -662,7 +688,7 @@ $excelSetup = New-Button 'Excel操作設定' {
  })
  $sheetBox=New-Object Windows.Forms.TextBox;$sheetBox.SetBounds(12,148,545,26);$dialog.Controls.Add($sheetBox)
  $cellBox=New-Object Windows.Forms.TextBox;$cellBox.Text='A1';$cellBox.SetBounds(12,203,260,26);$dialog.Controls.Add($cellBox)
- $pdfLabel=New-Object Windows.Forms.Label;$pdfLabel.Text='PDFファイル名（例：{日付}_日報.pdf）';$pdfLabel.SetBounds(12,233,545,22);$dialog.Controls.Add($pdfLabel)
+ $pdfLabel=New-Object Windows.Forms.Label;$pdfLabel.Text='PDFファイル名（例：{日付}_{変数:部署名}.pdf）';$pdfLabel.SetBounds(12,233,545,22);$dialog.Controls.Add($pdfLabel)
  $pdfName=New-Object Windows.Forms.TextBox;$pdfName.Text='{日付}.pdf';$pdfName.SetBounds(12,257,545,26);$dialog.Controls.Add($pdfName)
  try{
   $target=[string]$row.Cells['Target'].Value|ConvertFrom-Json -ErrorAction Stop
@@ -679,14 +705,15 @@ $excelSetup = New-Button 'Excel操作設定' {
   try{if($fileDialog.ShowDialog($dialog) -eq 'OK'){$valueBox.Text=$fileDialog.FileName}}finally{$fileDialog.Dispose()}
  })
  $updateExcelFields={
-  $isCell=$kind.SelectedItem -in @('Excelセル入力','Excelセル選択','Excelセルコピー')
+  $isCell=$kind.SelectedItem -in $excelCellActions
+  $valueLabel.Text=if($kind.SelectedItem -eq 'Excelセル値を変数に保存'){'変数名（例：部署名 → {変数:部署名} で使用）'}else{'値（シート選択：{年月}・{年月-1} 可／PDF：保存先）'}
   $sheetBox.Enabled=$isCell -or $kind.SelectedItem -in @('Excelシート印刷','ExcelシートPDF保存')
   $cellBox.Enabled=$isCell
   $browse.Enabled=$kind.SelectedItem -in @('Excelブックを開く','ExcelシートPDF保存')
   $isPdf=$kind.SelectedItem -eq 'ExcelシートPDF保存'
   $monthFolder.Visible=$isPdf
   $pdfLabel.Visible=$isPdf;$pdfName.Visible=$isPdf
-  $valueBox.Enabled=$kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','Excelセル入力','ExcelシートPDF保存')
+  $valueBox.Enabled=$kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','Excelセル入力','ExcelシートPDF保存','Excelセル値を変数に保存')
  }
  $kind.Add_SelectedIndexChanged($updateExcelFields)
  & $updateExcelFields
@@ -694,15 +721,19 @@ $excelSetup = New-Button 'Excel操作設定' {
  $cancel=New-Object Windows.Forms.Button;$cancel.Text='キャンセル';$cancel.DialogResult='Cancel';$cancel.SetBounds(470,302,87,28)
  $dialog.Controls.Add($ok);$dialog.Controls.Add($cancel);$dialog.AcceptButton=$ok;$dialog.CancelButton=$cancel
  $ok.Add_Click({
-  if($kind.SelectedItem -in @('Excelセル入力','Excelセル選択','Excelセルコピー')){
+  if($kind.SelectedItem -in $excelCellActions){
    try{$null=Resolve-ExcelCellAddress $cellBox.Text ([datetime]::Today)}
+   catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
+  }
+  if($kind.SelectedItem -eq 'Excelセル値を変数に保存'){
+   try{Assert-RpaVariableName $valueBox.Text.Trim()}
    catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
   }
   if($kind.SelectedItem -in @('Excelブックを開く','Excelシート選択','ExcelシートPDF保存') -and [string]::IsNullOrWhiteSpace($valueBox.Text)){
    [void][Windows.Forms.MessageBox]::Show('値を入力してください。','入力エラー');return
   }
   if($kind.SelectedItem -eq 'ExcelシートPDF保存'){
-   try{$null=Resolve-ExcelPdfName ([pscustomobject]@{FileName=$pdfName.Text}) (Get-RpaToday)}
+   try{$null=Resolve-ExcelPdfName ([pscustomobject]@{FileName=$pdfName.Text}) (Get-RpaToday) -ValidateTemplate}
    catch{[void][Windows.Forms.MessageBox]::Show($dialog,$_.Exception.Message,'入力エラー');return}
   }
   $dialog.DialogResult='OK'
@@ -723,7 +754,7 @@ $mailSetup=New-Button 'メール作成設定' {
  $dialog.Text='メール作成設定（Outlook下書き）';$dialog.ClientSize=New-Object Drawing.Size(640,500)
  $dialog.StartPosition='CenterParent';$dialog.FormBorderStyle='FixedDialog';$dialog.MaximizeBox=$false
  $fields=@{}
- foreach($spec in @(@('To','宛先（任意・複数はセミコロン区切り）',12,26),@('Subject','件名（{日付}・{年月}・{年月日} 可）',67,26),@('Body','本文（自由入力）',122,145),@('Attachments','添付パス（1行に1ファイル、{年月}・{日付} 可）',296,86))){
+ foreach($spec in @(@('To','宛先（任意・複数はセミコロン区切り）',12,26),@('Subject','件名（例：{変数:部署名}の日報 {日付}）',67,26),@('Body','本文（自由入力・{変数:部署名} なども使用可）',122,145),@('Attachments','添付パス（1行に1ファイル、{年月}・{日付} 可）',296,86))){
   $label=New-Object Windows.Forms.Label;$label.Text=$spec[1];$label.SetBounds(12,$spec[2],610,22);$dialog.Controls.Add($label)
   $box=New-Object Windows.Forms.TextBox;$box.Multiline=$spec[3] -gt 26
   if($box.Multiline){$box.ScrollBars='Vertical';$box.AcceptsReturn=$true}
@@ -794,20 +825,26 @@ $configureInput = New-Button '入力情報設定' {
 $remove = New-Button '削除' {
  foreach ($i in @($grid.SelectedRows | ForEach-Object { $_.Index } | Sort-Object -Descending)) { $grid.Rows.RemoveAt($i) }
 }
-function Move-Step($offset) {
- if ($grid.SelectedRows.Count -ne 1) { Write-Log '並べ替える行を1行選択してください。'; return }
- $i = $grid.SelectedRows[0].Index; $j = $i + $offset
- if ($j -lt 0 -or $j -ge $grid.Rows.Count) { return }
+function Move-Step([int]$offset) {
+ if ($grid.SelectedRows.Count -eq 0) { Write-Log '並べ替える行を選択してください。'; return }
+ $selected=@($grid.SelectedRows | ForEach-Object {$_.Index} | Sort-Object -Descending:($offset -gt 0))
+ $edge=$selected[0]+$offset
+ if($edge -lt 0 -or $edge -ge $grid.Rows.Count){return}
  [void]$grid.EndEdit()
- $first=New-Object object[] $grid.Columns.Count
- $second=New-Object object[] $grid.Columns.Count
- for ($k=0; $k -lt $grid.Columns.Count; $k++) {
-  $first[$k]=$grid.Rows[$i].Cells[$k].Value; $second[$k]=$grid.Rows[$j].Cells[$k].Value
+ foreach($i in $selected){
+  $j=$i+$offset
+  $first=$grid.Rows[$i];$second=$grid.Rows[$j]
+  $firstValues=@(foreach($cell in $first.Cells){$cell.Value})
+  $secondValues=@(foreach($cell in $second.Cells){$cell.Value})
+  for($k=0;$k -lt $grid.Columns.Count;$k++){
+   $first.Cells[$k].Value=$secondValues[$k];$second.Cells[$k].Value=$firstValues[$k]
+  }
+  $style=$first.DefaultCellStyle
+  $first.DefaultCellStyle=$second.DefaultCellStyle;$second.DefaultCellStyle=$style
  }
- for ($k=0; $k -lt $grid.Columns.Count; $k++) {
-  $grid.Rows[$i].Cells[$k].Value=$second[$k]; $grid.Rows[$j].Cells[$k].Value=$first[$k]
- }
- $grid.ClearSelection(); $grid.Rows[$j].Selected = $true
+ $grid.CurrentCell=$grid.Rows[($selected[0]+$offset)].Cells['Action']
+ $grid.ClearSelection()
+ foreach($i in $selected){$grid.Rows[($i+$offset)].Selected=$true}
 }
 $up = New-Button '↑' { Move-Step -1 }
 $down = New-Button '↓' { Move-Step 1 }
@@ -901,6 +938,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
  $script:running = $true; $script:cancel = $false
  $exitRequested=$false
  $script:ScenarioDateBase=Get-RpaToday
+ $script:RpaVariables=@{}
  $flowStack=New-Object 'System.Collections.Generic.List[object]'
  $flowActive=$true
  $activeStep=$null
@@ -938,9 +976,10 @@ function Invoke-Scenario([switch]$SelectedOnly) {
     { $_ -in $excelActions } { Invoke-ExcelStep $s }
     'Web用URLを開く' { Start-RpaWebBrowser $s.Value }
     'ウェブ要素クリック' { Invoke-WebStep $s }
-    'ウェブ要素入力' { Invoke-WebStep $s -InputMode -inputValue $s.Value }
+    'ウェブ要素入力' { Invoke-WebStep $s -InputMode -inputValue (Expand-RpaVariables $s.Value) }
     { $_ -in @('ID入力','パスワード入力') } { Invoke-ProtectedInput $s }
-    { $_ -in @('要素クリック','要素入力','要素フォーカス') } { Invoke-ElementStep $s }
+    '要素入力' { Invoke-ElementStep ([pscustomobject]@{Action=$s.Action;Target=$s.Target;Value=(Expand-RpaVariables $s.Value)}) }
+    { $_ -in @('要素クリック','要素フォーカス') } { Invoke-ElementStep $s }
     '待機' { Wait-Rpa ([int]$s.Value) }
     { $_ -in @('マウス移動','左クリック','ダブルクリック','右クリック') } {
      [void][RpaNative]::SetCursorPos([int]$s.X,[int]$s.Y)
@@ -950,8 +989,9 @@ function Invoke-Scenario([switch]$SelectedOnly) {
      if ($s.Action -eq 'ダブルクリック') { Mouse-Click 2 4; Wait-Rpa 80; Mouse-Click 2 4 }
     }
     '文字入力' {
-     if ($s.Value.Length) {
-      [Windows.Forms.Clipboard]::SetText($s.Value)
+     $inputText=Expand-RpaVariables $s.Value
+     if ($inputText.Length) {
+      [Windows.Forms.Clipboard]::SetText($inputText)
       [Windows.Forms.SendKeys]::SendWait('^v')
      }
     }
@@ -986,6 +1026,7 @@ function Invoke-Scenario([switch]$SelectedOnly) {
  finally {
   $script:running=$false; $grid.Enabled=$true; $grid.ReadOnly=$false
   $script:ScenarioDateBase=$null
+  $script:RpaVariables=$null
   foreach ($b in $toolbar.Controls) { $b.Enabled=$true }; $stop.Enabled=$false
  }
  if($exitRequested){

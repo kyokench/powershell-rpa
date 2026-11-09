@@ -25,7 +25,20 @@ function Expand-RpaDateTokens([string]$text, [datetime]$day) {
   }
  })
 }
-function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday)) {
+function Assert-RpaVariableName([string]$name) {
+ if($name -notmatch '^[\p{L}_][\p{L}\p{Nd}_]{0,63}\z'){throw '変数名は文字または _ で始め、文字・数字・_ で64文字以内にしてください。'}
+}
+function Expand-RpaVariables([string]$text,[switch]$ValidateTemplate) {
+ [regex]::Replace($text,'\{変数:([^{}]*)\}',[Text.RegularExpressions.MatchEvaluator]{
+  param($match)
+  $name=$match.Groups[1].Value
+  Assert-RpaVariableName $name
+  if($ValidateTemplate){return '変数値'}
+  if($null -eq $script:RpaVariables -or -not $script:RpaVariables.ContainsKey($name)){throw "変数「$name」が未設定です。先にExcelセル値を変数に保存してください。"}
+  return [string]$script:RpaVariables[$name]
+ })
+}
+function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday), [switch]$ValidateTemplate) {
  if([string]::IsNullOrWhiteSpace($step.Value) -or $step.Value.Length -gt 100){throw '日付の書式を指定してください（100文字以内）。'}
  $options=if($step.DateOptions){$step.DateOptions|ConvertFrom-Json -ErrorAction Stop}else{[pscustomobject]@{Basis='Today';OffsetDays=0}}
  $offset=0
@@ -36,7 +49,18 @@ function Get-DateInputText($step, [datetime]$Today=(Get-RpaToday)) {
    $date=[datetime]::MinValue
    if(-not [datetime]::TryParseExact([string]$options.FixedDate,'yyyy-MM-dd',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::None,[ref]$date)){throw '指定日が正しくありません。日付入力設定で設定し直してください。'}
   }
-  default {throw '日付の基準は実行日または指定日を選択してください。'}
+  'MonthStart' {$date=[datetime]::new($Today.Year,$Today.Month,1)}
+  'MonthEnd' {$date=[datetime]::new($Today.Year,$Today.Month,[datetime]::DaysInMonth($Today.Year,$Today.Month))}
+  'MonthDay' {
+   $monthDay=0
+   if(-not [int]::TryParse([string]$options.MonthDay,[ref]$monthDay) -or $monthDay -notin (1..31)){throw '月内の日は1～31で指定してください。'}
+   if($monthDay -gt [datetime]::DaysInMonth($Today.Year,$Today.Month)){
+    if(-not $ValidateTemplate){throw "実行月に $monthDay 日はありません。"}
+    $monthDay=1
+   }
+   $date=[datetime]::new($Today.Year,$Today.Month,$monthDay)
+  }
+  default {throw '日付入力設定で基準日を選択してください。'}
  }
  $format=[string]$step.Value
  # M and d alone are .NET standard formats; force their custom-format meaning.

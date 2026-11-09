@@ -22,17 +22,19 @@ function Invoke-MailDraft($step) {
  $activate=Get-MailActivation $settings
  $day=if($script:ScenarioDateBase){$script:ScenarioDateBase}else{Get-RpaToday}
  $files=@(foreach($file in $settings.Attachments){
-  $path=Expand-RpaDateTokens $file $day
+  $path=Expand-RpaVariables (Expand-RpaDateTokens $file $day)
   if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw "添付ファイルが見つかりません: $path"}
   $path
  })
+ $subject=Expand-RpaVariables (Expand-RpaDateTokens ([string]$settings.Subject) $day)
+ $body=Expand-RpaVariables ([string]$step.Value)
  $app=$null;$item=$null;$attachments=$null;$saved=$false
  try {
   try{$app=New-Object -ComObject Outlook.Application -ErrorAction Stop}
   catch{throw 'クラシック Outlookを起動できません。インストールとメールプロファイルの設定を確認してください。'}
   $item=$app.CreateItem(0)
-  $item.To=[string]$settings.To;$item.Subject=Expand-RpaDateTokens ([string]$settings.Subject) $day
-  $item.BodyFormat=1;$item.Body=[string]$step.Value
+  $item.To=[string]$settings.To;$item.Subject=$subject
+  $item.BodyFormat=1;$item.Body=$body
   $item.Save();$saved=$true
   if($files.Count){
    $attachments=$item.Attachments

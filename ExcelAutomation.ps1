@@ -20,16 +20,16 @@ function Save-ExcelBeforeClose {
   Write-Log 'Excelブックを自動保存しました。'
  }
 }
-function Resolve-ExcelPdfName($target,[datetime]$day) {
+function Resolve-ExcelPdfName($target,[datetime]$day,[switch]$ValidateTemplate) {
  $template=if([string]::IsNullOrWhiteSpace([string]$target.FileName)){'{日付}.pdf'}else{[string]$target.FileName}
- $name=Expand-RpaDateTokens $template $day
+ $name=Expand-RpaVariables (Expand-RpaDateTokens $template $day) -ValidateTemplate:$ValidateTemplate
  if($name.IndexOfAny([IO.Path]::GetInvalidFileNameChars()) -ge 0 -or $name.EndsWith('.') -or $name.EndsWith(' ')){throw 'PDFファイル名に使用できない文字が含まれています。保存先フォルダーは別の欄で指定してください。'}
  if(-not $name.EndsWith('.pdf',[StringComparison]::OrdinalIgnoreCase)){$name+='.pdf'}
  return $name
 }
 function Resolve-ExcelPdfFolder([string]$path,[datetime]$day) {
  $dynamic=$path -match '\{年月(?:[+-][0-9]{1,5})?\}'
- $folder=[IO.Path]::GetFullPath((Expand-RpaDateTokens $path $day))
+ $folder=[IO.Path]::GetFullPath((Expand-RpaVariables (Expand-RpaDateTokens $path $day)))
  if(Test-Path -LiteralPath $folder -PathType Container){return $folder}
  $parent=[IO.Path]::GetDirectoryName($folder)
  if($dynamic -and $parent -and (Test-Path -LiteralPath $parent -PathType Container)){
@@ -104,12 +104,13 @@ function Invoke-ExcelStep($step){
     $sheets=$script:ExcelBook.Worksheets;$sheet=$sheets.Item($sheetName)
     $range=$sheet.Range((Resolve-ExcelCellAddress $target.Cell $day))
     if($range.CountLarge -ne 1){throw '入力先は1セルを指定してください。'}
+    $inputText=Expand-RpaVariables $step.Value
     $range.NumberFormat='@'
-    $range.Value2=[string]$step.Value
+    $range.Value2=$inputText
     Write-Log "Excelセル入力先: $sheetName!$($range.Address())"
    }finally{Release-ExcelObject $range;Release-ExcelObject $sheet;Release-ExcelObject $sheets}
   }
-  {$_ -in @('Excelセル選択','Excelセルコピー','Excelシート印刷','ExcelシートPDF保存')} {
+  {$_ -in @('Excelセル選択','Excelセルコピー','Excelセル値を変数に保存','Excelシート印刷','ExcelシートPDF保存')} {
    Assert-ExcelBook
    $target=$step.Target|ConvertFrom-Json -ErrorAction Stop
    $sheetName=if($target.Sheet){Expand-RpaDateTokens $target.Sheet $day}else{$script:ExcelSheetName}
@@ -122,11 +123,18 @@ function Invoke-ExcelStep($step){
       $sheet.Activate();$range.Select()
       $script:ExcelSheetName=[string]$sheet.Name
      }
-     'Excelセルコピー' {
+     {$_ -in @('Excelセルコピー','Excelセル値を変数に保存')} {
       $range=$sheet.Range((Resolve-ExcelCellAddress $target.Cell $day))
       $script:ExcelApp.Calculate()
-      Set-ExcelCellClipboard ([string]$range.Value2)
-      Write-Log "Excelセルをクリップボードにコピーしました: $sheetName!$($range.Address())"
+      if($step.Action -eq 'Excelセルコピー'){
+       Set-ExcelCellClipboard ([string]$range.Value2)
+       Write-Log "Excelセルをクリップボードにコピーしました: $sheetName!$($range.Address())"
+      }else{
+       $name=([string]$step.Value).Trim()
+       Assert-RpaVariableName $name
+       $script:RpaVariables[$name]=[string]$range.Value2
+       Write-Log "Excelセルの値を変数「$name」に保存しました: $sheetName!$($range.Address())"
+      }
      }
      'Excelシート印刷' { $sheet.PrintOut() }
      'ExcelシートPDF保存' {
